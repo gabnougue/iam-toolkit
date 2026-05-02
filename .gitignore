@@ -1,0 +1,47 @@
+# Local AI assistant context — not tracked
+CLAUDE.md
+
+# Audit outputs — never commit real AD data
+outputs/*.csv
+outputs/*.json
+outputs/*.xlsx
+outputs/*.log
+!outputs/sample-results/
+
+# PowerShell
+*.ps1xml.bak
+*.psd1.bak
+PSScriptAnalyzerSettings.psd1.local
+
+# Python (Phase 2)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.python-version
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Secrets and local config
+.env
+.env.local
+*.pem
+*.key
+credentials.json
+secrets.json
