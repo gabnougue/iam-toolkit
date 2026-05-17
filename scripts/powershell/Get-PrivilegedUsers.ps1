@@ -104,6 +104,13 @@
       Administrators group at provisioning time. This is normal AD architecture, not a
       finding — expect rows showing Domain Admins members as Nested in Administrators.
 
+    Known LDAP limitation:
+      The `member` attribute is range-limited by AD to 5000 values per fetch. Privileged
+      groups with more than 5000 direct members would be silently truncated. In practice
+      this never happens — a privileged group with thousands of direct members is itself
+      a critical finding (and almost always indicates a control misconfiguration) — but
+      the limitation is noted here for transparency.
+
     Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and read access to
     the directory.
 #>
@@ -245,11 +252,16 @@ $rawResults = foreach ($groupName in $Groups) {
     }
 
     $visited = [System.Collections.Generic.HashSet[string]]::new()
-    Resolve-GroupMembership `
+    $groupRows = @(Resolve-GroupMembership `
         -TargetGroupName $groupName `
         -CurrentGroupDN  $group.DistinguishedName `
         -IsRoot          $true `
-        -VisitedGroups   $visited
+        -VisitedGroups   $visited)
+
+    if ($groupRows.Count -eq 0) {
+        Write-Verbose "Group '$groupName' has no resolvable members (empty, or all sub-groups empty)."
+    }
+    $groupRows
 }
 
 # Collapse duplicate (SamAccountName, GroupName) rows; prefer Direct when both paths exist
