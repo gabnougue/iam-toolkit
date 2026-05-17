@@ -21,17 +21,22 @@
     Number of days of inactivity that qualifies a principal as inactive. Defaults to 90.
 
 .PARAMETER SearchBase
-    Distinguished name of an OU to scope the search. If omitted, the entire domain is scanned.
+    Distinguished name of an OU to scope the user search. Applied ONLY to the user query.
+    The gMSA/sMSA query is always run domain-wide because managed service accounts live in
+    CN=Managed Service Accounts,DC=... and would be silently zeroed out if SearchBase
+    pointed at an OU.
 
 .PARAMETER Server
-    Specific domain controller to query for the initial principal listing. Under -AccurateMode
-    the per-DC lastLogon scan still queries every DC regardless of this parameter.
+    Specific domain controller to query for the initial principal listing. Under
+    -AccurateMode this DC's per-DC `lastLogon` values are captured during the listing pass
+    and the per-DC scan deliberately skips it — no DC is queried twice.
 
 .PARAMETER AccurateMode
     Queries every domain controller for the per-DC `lastLogon` attribute (NOT replicated;
     updated in real time) and uses the maximum value across DCs as the authoritative
-    last-logon time. Costs one query per DC. Use for audits where the threshold boundary
-    is critical.
+    last-logon time. In this mode the listing fetches `lastLogon` directly (instead of
+    the replicated-but-lagging `lastLogonTimestamp`) so the listing DC contributes its
+    value without an extra round-trip. Costs roughly N queries for N DCs.
 
 .PARAMETER OutputPath
     Path of the CSV file to write. Defaults to .\InactiveUsers_<yyyyMMdd_HHmmss>.csv in the
@@ -51,7 +56,7 @@
 
 .EXAMPLE
     .\Get-InactiveUsers.ps1 -SearchBase "OU=IT,DC=lab,DC=local" -DaysInactive 60
-    Restricts the audit to the IT OU.
+    Restricts the user audit to the IT OU (gMSAs are still scanned domain-wide).
 
 .NOTES
     Inactivity logic:
@@ -66,6 +71,18 @@
       lastLogon          - per-DC, NOT replicated, updated in real time. Used by
                            -AccurateMode which queries every DC and takes the max.
 
+    AccurateMode round-trip optimization:
+      The DC used for the initial listing is identified up front; its `lastLogon` values
+      are gathered during the listing query itself. The per-DC scan then iterates only
+      the *remaining* DCs. Net result: one listing query + (N-1) lightweight `lastLogon`
+      queries, never N+1.
+
+    SearchBase scoping:
+      Applied only to the user query. The gMSA/sMSA query runs domain-wide because
+      managed service accounts are not located under organizational OUs. Documenting
+      this asymmetry avoids silent omission of service-account findings when an auditor
+      scopes the run to an OU.
+
     System accounts:
       KRBTGT, Guest, and DefaultAccount are disabled by default and naturally excluded
       by the Enabled=true filter. The built-in Administrator user is enabled by default
@@ -76,7 +93,8 @@
     Managed Service Accounts:
       Both gMSAs (msDS-GroupManagedServiceAccount) and sMSAs (msDS-ManagedServiceAccount)
       are included via Get-ADServiceAccount. They have lastLogonTimestamp populated by
-      whichever host most recently used them.
+      whichever host most recently used them. PasswordLastSet on a gMSA reflects the
+      automatic 30-day password rotation managed by AD, not human action.
 
     Sort order:
       Rows are ordered with AdminCount=1 entries first, then by oldest LastLogon
@@ -115,18 +133,58 @@ Import-Module ActiveDirectory -ErrorAction Stop
 $cutoff = (Get-Date).AddDays(-$DaysInactive)
 Write-Verbose "Cutoff date: $cutoff (DaysInactive = $DaysInactive)"
 
+# In AccurateMode the listing fetches `lastLogon` (per-DC, real time) so the listing DC's
+# value is captured for free. In default mode we use the replicated `lastLogonTimestamp`.
 $listingProps = @(
     'SamAccountName', 'DisplayName', 'ObjectClass',
-    'lastLogonTimestamp', 'pwdLastSet', 'whenCreated',
-    'Enabled', 'adminCount', 'DistinguishedName'
+    'pwdLastSet', 'whenCreated', 'Enabled', 'adminCount', 'DistinguishedName'
 )
+$listingProps += if ($AccurateMode) { 'lastLogon' } else { 'lastLogonTimestamp' }
 
+# Resolve the listing DC up front so the per-DC scan can deliberately skip it
+$dcs = $null
+$listingDc = $null
+if ($AccurateMode) {
+    try {
+        $dcs = Get-ADDomainController -Filter * -ErrorAction Stop
+    }
+    catch {
+        throw "Failed to enumerate domain controllers for -AccurateMode: $($_.Exception.Message)"
+    }
+    if (-not $dcs) {
+        throw "No domain controllers returned for -AccurateMode."
+    }
+
+    if ($PSBoundParameters.ContainsKey('Server')) {
+        try {
+            $listingDc = Get-ADDomainController -Identity $Server -ErrorAction Stop
+        }
+        catch {
+            throw "Failed to resolve -Server '$Server' to a domain controller: $($_.Exception.Message)"
+        }
+    }
+    else {
+        $listingDc = $dcs[0]
+    }
+}
+
+# Build the base listing param set
 $listingParams = @{ ErrorAction = 'Stop' }
-if ($PSBoundParameters.ContainsKey('Server'))     { $listingParams.Server     = $Server }
-if ($PSBoundParameters.ContainsKey('SearchBase')) { $listingParams.SearchBase = $SearchBase }
+if ($AccurateMode) {
+    $listingParams.Server = $listingDc.HostName
+}
+elseif ($PSBoundParameters.ContainsKey('Server')) {
+    $listingParams.Server = $Server
+}
+
+# User listing also accepts SearchBase; gMSA listing does not (see .NOTES)
+$userListingParams = $listingParams.Clone()
+if ($PSBoundParameters.ContainsKey('SearchBase')) {
+    $userListingParams.SearchBase = $SearchBase
+}
 
 try {
-    $users = Get-ADUser -Filter 'Enabled -eq $true' -Properties $listingProps @listingParams
+    $users = Get-ADUser -Filter 'Enabled -eq $true' -Properties $listingProps @userListingParams
 }
 catch {
     throw "Failed to query Active Directory users: $($_.Exception.Message)"
@@ -141,21 +199,21 @@ catch {
 }
 
 $principals = @($users) + @($svcAccts)
-Write-Verbose "Retrieved $(@($principals).Count) enabled principal(s)"
+Write-Verbose "Retrieved $(@($principals).Count) enabled principal(s) from listing DC"
 
-# Accurate mode: build SamAccountName -> max(lastLogon DateTime) across all DCs
+# Accurate mode: seed the dict from the listing DC's lastLogon, then scan ONLY the remaining DCs
 $accurateLastLogon = @{}
 if ($AccurateMode) {
-    Write-Verbose "Accurate mode: scanning every DC for per-DC lastLogon"
-    try {
-        $dcs = Get-ADDomainController -Filter * -ErrorAction Stop
+    foreach ($p in $principals) {
+        if ($p.lastLogon -and $p.lastLogon -gt 0) {
+            $accurateLastLogon[$p.SamAccountName] = [DateTime]::FromFileTime($p.lastLogon)
+        }
     }
-    catch {
-        throw "Failed to enumerate domain controllers for -AccurateMode: $($_.Exception.Message)"
-    }
+    Write-Verbose "Seeded $($accurateLastLogon.Count) lastLogon entr(y/ies) from listing DC '$($listingDc.HostName)'"
 
-    foreach ($dc in $dcs) {
-        Write-Verbose "Querying DC: $($dc.HostName)"
+    $remainingDcs = $dcs | Where-Object { $_.HostName -ne $listingDc.HostName }
+    foreach ($dc in $remainingDcs) {
+        Write-Verbose "Querying additional DC: $($dc.HostName)"
         try {
             $perDcUsers = Get-ADUser -Filter 'Enabled -eq $true' -Properties lastLogon -Server $dc.HostName -ErrorAction Stop
             $perDcSvc   = try { Get-ADServiceAccount -Filter 'Enabled -eq $true' -Properties lastLogon -Server $dc.HostName -ErrorAction Stop }
@@ -183,8 +241,10 @@ $rawRows = foreach ($p in $principals) {
     if ($p.whenCreated -and $p.whenCreated -gt $cutoff) { continue }
 
     $lastLogon = $null
-    if ($AccurateMode -and $accurateLastLogon.ContainsKey($p.SamAccountName)) {
-        $lastLogon = $accurateLastLogon[$p.SamAccountName]
+    if ($AccurateMode) {
+        if ($accurateLastLogon.ContainsKey($p.SamAccountName)) {
+            $lastLogon = $accurateLastLogon[$p.SamAccountName]
+        }
     }
     elseif ($p.LastLogonDate) {
         $lastLogon = $p.LastLogonDate
