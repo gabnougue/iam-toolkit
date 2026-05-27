@@ -38,6 +38,13 @@
     the replicated-but-lagging `lastLogonTimestamp`) so the listing DC contributes its
     value without an extra round-trip. Costs roughly N queries for N DCs.
 
+.PARAMETER IncludeNewlyCreated
+    Disables the default "too-young" exclusion (`whenCreated > cutoff`). Use when
+    auditing a freshly migrated tenant, a recently seeded lab, or any context where
+    newly created accounts should still be evaluated for inactivity. The `whenCreated`
+    attribute is system-protected in AD (NO_USER_MODIFY) and cannot be backdated, so
+    test fixtures created today otherwise appear "too young" and are silently skipped.
+
 .PARAMETER OutputPath
     Path of the CSV file to write. Defaults to .\InactiveUsers_<yyyyMMdd_HHmmss>.csv in the
     current directory.
@@ -64,6 +71,9 @@
         - whenCreated <= cutoff (it has been around long enough to have logged on), AND
         - lastLogon is null OR lastLogon < cutoff.
       Principals younger than the cutoff are excluded — they have not had time to log on.
+      The exclusion is suppressed by -IncludeNewlyCreated (post-migration audits, lab
+      validation against fresh fixtures: `whenCreated` is system-protected and cannot
+      be backdated, so seeded test users would otherwise be silently dropped).
 
     Replication behavior of last-logon attributes:
       lastLogonTimestamp - replicated to every DC, but with up to 14-day lag controlled by
@@ -119,6 +129,9 @@ param(
 
     [Parameter()]
     [switch]$AccurateMode,
+
+    [Parameter()]
+    [switch]$IncludeNewlyCreated,
 
     [Parameter()]
     [string]$OutputPath = ".\InactiveUsers_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
@@ -237,8 +250,8 @@ if ($AccurateMode) {
 }
 
 $rawRows = foreach ($p in $principals) {
-    # Skip principals younger than the cutoff — they have not had time to log on
-    if ($p.whenCreated -and $p.whenCreated -gt $cutoff) { continue }
+    # Skip principals younger than the cutoff (suppress with -IncludeNewlyCreated)
+    if (-not $IncludeNewlyCreated -and $p.whenCreated -and $p.whenCreated -gt $cutoff) { continue }
 
     $lastLogon = $null
     if ($AccurateMode) {
