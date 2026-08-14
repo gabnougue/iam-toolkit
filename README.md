@@ -64,14 +64,14 @@ The `lab/` directory contains everything needed to spin up a Windows Server doma
 ## Documentation
 
 - `docs/audit-methodology.md` — how to run a full audit pass and interpret results
-- `docs/findings-examples.md` — example findings, severity, and remediation notes
-- `reports/sample-audit-report.md` — a sample report produced from the lab
+- `reports/sample-audit-report.md` — a sample report produced from the lab, with severity-graded findings
 
 ## Roadmap
 
-- Phase 1 — Core PowerShell scripts, lab, and documentation
-- Phase 2 — Python reporting wrapper, sample outputs, methodology guide
-- Phase 3 — Polish, examples, and additional detection coverage
+- **Phase 1 (complete)** — Core PowerShell scripts, reproducible lab, seeded fixtures, threat-model catalogue
+- **Phase 2 (in progress)** — Sample outputs from the lab, sample audit report, methodology guide, and a fourth script covering Kerberos-adjacent attack paths (delegations and kerberoastable privileged accounts)
+- **Phase 3** — v1.0.0 tag, iteration on real feedback (September–December 2026)
+- **Phase 4** — Packaging as an "IAM Health Check Kit" for external use
 
 ## License
 
