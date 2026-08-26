@@ -111,6 +111,30 @@
       a critical finding (and almost always indicates a control misconfiguration) — but
       the limitation is noted here for transparency.
 
+    adminCount and SDProp — read this before trusting the AdminCount column:
+      adminCount is not set at the moment a principal is added to a protected group.
+      It is set by the SDProp (Security Descriptor Propagator) task, which runs on
+      the PDC emulator every 60 minutes of *PDC uptime* — not calendar time. On a
+      lab cloud VM that is deallocated most of the day, or on a DC that was just
+      promoted, SDProp may never have run yet: the new DA member exists in the
+      Domain Admins `member` list but adminCount is still empty, and this script's
+      AdminCount column reads $null for that principal.
+
+      Same phenomenon in production:
+        - Right after a remediation that added a user to a protected group.
+        - Right after a fresh compromise where the attacker added themselves.
+        - On a domain whose PDC emulator has recently rebooted.
+      In all of these cases an audit based on adminCount will UNDER-REPORT. The
+      membership walk in this script is authoritative regardless of adminCount —
+      always cross-check the GroupName column, not just AdminCount.
+
+      Forcing SDProp (Domain Admin only):
+        $root = [ADSI]"LDAP://RootDSE"
+        $root.Put("runProtectAdminGroupsTask", 1)
+        $root.SetInfo()
+      After the task completes (seconds to minutes), adminCount is set on every
+      current member of the protected groups.
+
     Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and read access to
     the directory.
 #>
