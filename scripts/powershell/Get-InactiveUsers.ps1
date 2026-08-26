@@ -146,13 +146,17 @@ Import-Module ActiveDirectory -ErrorAction Stop
 $cutoff = (Get-Date).AddDays(-$DaysInactive)
 Write-Verbose "Cutoff date: $cutoff (DaysInactive = $DaysInactive)"
 
-# In AccurateMode the listing fetches `lastLogon` (per-DC, real time) so the listing DC's
-# value is captured for free. In default mode we use the replicated `lastLogonTimestamp`.
+# Ask for the *calculated* properties (PasswordLastSet / LastLogonDate) because the
+# AD module populates only what is requested by name: fetching `pwdLastSet` alone
+# does NOT auto-populate PasswordLastSet, and same for lastLogonTimestamp -> LastLogonDate.
+# First real lab run (26 Aug 2026) confirmed both columns were blank / "Never" without this.
+# AccurateMode keeps requesting the raw `lastLogon` attribute since it is read and
+# converted manually via FromFileTime in the per-DC scan.
 $listingProps = @(
     'SamAccountName', 'DisplayName', 'ObjectClass',
-    'pwdLastSet', 'whenCreated', 'Enabled', 'adminCount', 'DistinguishedName'
+    'PasswordLastSet', 'whenCreated', 'Enabled', 'adminCount', 'DistinguishedName'
 )
-$listingProps += if ($AccurateMode) { 'lastLogon' } else { 'lastLogonTimestamp' }
+$listingProps += if ($AccurateMode) { 'lastLogon' } else { 'LastLogonDate' }
 
 # Resolve the listing DC up front so the per-DC scan can deliberately skip it
 $dcs = $null
