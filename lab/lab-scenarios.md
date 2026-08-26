@@ -17,6 +17,26 @@ you that multiple controls failed on the same identity.
 4. For client-facing work: this catalogue is the source material for explaining "what we
    look for and why" in scoping conversations.
 
+## Narrative calibration (26 August 2026 lab run)
+
+The first real lab run surfaced a hard AD constraint that reshapes several scenarios
+below: **three attributes cannot be backdated via LDAP writes** regardless of caller
+privilege — `whenCreated` (schema-protected), `lastLogonTimestamp` (owned by the SAM),
+and `pwdLastSet` (accepts only 0 / -1). The seed keeps the `InactiveDays` marker for
+pedagogical intent, but every seeded account observably appears as **never
+authenticated**, and `PasswordAge` is uniform across seeded accounts.
+
+The lab therefore does not demonstrate "inactive since 400 days" as an observable
+signal. What it demonstrates is: privileged accounts and service accounts that **were
+never used since their creation and yet hold Domain Admin / Backup Operators plus
+PasswordNeverExpires** — a finding at least as damning in an audit, because nobody knows
+what those accounts are for, nobody watches them, and the credentials could have been
+compromised at provisioning and never noticed.
+
+Scenarios below have been rewritten to reflect this reality. The threat models remain
+identical — only the observable signal changes from "N days idle" to "never
+authenticated since creation".
+
 ---
 
 ## Scenario 1 — Stale Domain Admin
@@ -25,8 +45,10 @@ you that multiple controls failed on the same identity.
 
 **Configuration in the lab**:
 - Direct member of `Domain Admins`
-- `lastLogonTimestamp` backdated 180 days
-- Password rotated normally, account enabled
+- Seed intent: inactive 180 days. Observable: never authenticated since creation
+  (`lastLogonTimestamp` is SAM-owned and cannot be backdated via LDAP — see the
+  calibration note at the top of this document).
+- Account enabled
 
 **Real-world context**: the IT manager who left the company six months ago and whose
 account was never disabled. Sometimes a deliberate "break-glass" account that nobody
@@ -41,8 +63,8 @@ reviews because "that account isn't supposed to be used."
 
 **Detection**:
 - `Get-PrivilegedUsers.ps1` → row `mlefevre, Domain Admins, Direct, user, Enabled=true, AdminCount=1`
-- `Get-InactiveUsers.ps1 -IncludeNewlyCreated` → surfaces near the top (AdminCount=1 sort
-  priority), LastLogon = ~180 days ago
+- `Get-InactiveUsers.ps1 -IncludeNewlyCreated` → surfaces near the top (AdminCount=1
+  sort priority), `LastLogon = Never`
 
 **Cross-vector**: 2 reports — this is the canonical "stale-priv" finding pattern.
 
@@ -59,8 +81,8 @@ the user had access to.
 **Configuration in the lab**:
 - Direct member of `Backup Operators`
 - `PasswordNeverExpires = true`
-- `lastLogonTimestamp` backdated 250 days
-- `pwdLastSet` backdated 900 days
+- Seed intent: inactive 250 days, password 900 days old. Observable: never authenticated
+  since creation, `PasswordAge = ~0` (see calibration note).
 
 **Real-world context**: the admin account from when the domain was first deployed.
 Probably created with `sysadmin / sysadmin` or similar, granted broad rights "until we
@@ -70,14 +92,17 @@ team.
 **Threat model**: `Backup Operators` membership grants `SeBackupPrivilege` on domain
 controllers, which is sufficient to read `NTDS.dit` and the `SYSTEM` registry hive. From
 there the attacker extracts the `krbtgt` hash offline and forges Golden Tickets — full
-forest compromise without ever touching a DA account. Combined with a 900-day-old
-password (likely present in old credential dumps) and inactivity (nobody is watching),
-this is a fully pre-staged compromise path.
+forest compromise without ever touching a DA account. In the real-world archetype
+this is compounded by a long-standing password (likely present in old credential
+dumps) and by inactivity (nobody watching). In the lab the observable is more
+severe: **the account was never used since creation** yet holds Backup Operators —
+its purpose is unknown, its provisioning credentials are theoretically still valid.
 
 **Detection**:
 - `Get-PrivilegedUsers.ps1` → `sysadmin-legacy, Backup Operators, Direct`
-- `Get-InactiveUsers.ps1 -IncludeNewlyCreated` → AdminCount=1, LastLogon ~250 days
-- `Get-PasswordNeverExpires.ps1` → AdminCount=1, PasswordAge=900
+- `Get-InactiveUsers.ps1 -IncludeNewlyCreated` → AdminCount=1, `LastLogon = Never`
+- `Get-PasswordNeverExpires.ps1` → AdminCount=1, `PasswordAge = ~0` (uniform across
+  seeded PNE accounts in this lab)
 
 **Cross-vector**: **3 reports** — the "everything's wrong" tier. In a real audit, this
 is page-one of the report.
@@ -96,8 +121,13 @@ backup operations.
 **Configuration in the lab**:
 - Direct member of `Domain Admins`
 - `PasswordNeverExpires = true`
-- `pwdLastSet` backdated 1100 days
-- Active (used regularly by the simulated backup tool)
+- Seed intent: 1100-day-old password (Kerberoastable with unlimited crack time).
+  Observable: `PasswordAge = ~0` in the lab (see calibration note); the threat model
+  below still holds because the *architectural* misconfiguration (svc account +
+  DA + PNE) is what the audit is meant to flag.
+- No SPN yet — it will be added when the seed is extended for `Get-KerberosRisks.ps1`.
+  Without an SPN, `svc-backup` is not literally Kerberoastable *in the lab*, but the
+  finding pattern (naming + DA + PNE) is unambiguous to a reviewer.
 
 **Real-world context**: "the backup vendor's documentation said the service account
 needs `Domain Admin` rights," nobody pushed back, the account was created in 2022 and
@@ -120,8 +150,9 @@ service accounts must not hold DA rights and must rotate passwords.
 - `Get-PrivilegedUsers.ps1` → `svc-backup, Domain Admins, Direct, user, AdminCount=1`.
   Naming pattern (`svc-*`) is the human-readable signal that this is a service account
   in DA, not a person.
-- `Get-PasswordNeverExpires.ps1` → surfaces at the very top (AdminCount=1, oldest
-  PasswordAge among privileged), `PasswordAge=1100`
+- `Get-PasswordNeverExpires.ps1` → surfaces at the top of the privileged tier (AdminCount=1),
+  `PasswordAge = ~0` in the lab (uniform across seeded PNE accounts; in a real audit the
+  age would be measured in years)
 
 **Cross-vector**: 2 reports — the privileged-stale-credential combination.
 
@@ -145,24 +176,31 @@ service accounts must not hold DA rights and must rotate passwords.
 **Configuration in the lab**:
 - Direct member of `Domain Admins`
 - `PasswordNeverExpires = true`
-- `lastLogonTimestamp` backdated 400 days
-- `pwdLastSet` backdated 1400 days
+- Seed intent: inactive 400 days, password 1400 days old. Observable in the lab:
+  **never authenticated since creation**, `PasswordAge = ~0` (see calibration note).
+- The observable is arguably *worse* than the intent: an account created in a
+  privileged group that has *never authenticated* raises a question the "inactive
+  for 400 days" narrative does not — "what was this account provisioned for, and was
+  its initial password ever known outside the provisioning workflow?"
 
-**Real-world context**: the service this account supported was decommissioned years ago.
-The application owner left. Nobody owns the account anymore, so nobody dares delete it
-"in case something breaks." Often discovered by audit teams looking specifically for
-service accounts with no recent activity.
+**Real-world context**: the service this account supported was decommissioned years
+ago. The application owner left. Nobody owns the account anymore, so nobody dares
+delete it "in case something breaks." Or — the lab-flavour variant — an account
+provisioned for a project that was cancelled before rollout, but the identity request
+had already granted DA and PNE for "we need it before Friday" reasons.
 
 **Threat model**: combines every other scenario.
-- Same Kerberoasting path as Scenario 3.
+- Same Kerberoasting path as Scenario 3 (once an SPN is present).
 - Nobody would notice if it were used — operational blind spot.
 - Forgotten = unmonitored = a potential persistence mechanism for an attacker who has
   already compromised the environment.
+- Provisioning-time credential exposure: whoever set the initial password (helpdesk
+  template? ticket attachment? Slack DM?) still knows it, and it has never rotated.
 
 **Detection**: **all three scripts**.
 - `Get-PrivilegedUsers.ps1` → `Direct, Domain Admins, AdminCount=1`
-- `Get-InactiveUsers.ps1 -IncludeNewlyCreated` → top of report, LastLogon ~400 days
-- `Get-PasswordNeverExpires.ps1` → top of report, PasswordAge=1400
+- `Get-InactiveUsers.ps1 -IncludeNewlyCreated` → top of report, `LastLogon = Never`
+- `Get-PasswordNeverExpires.ps1` → top of privileged tier, `PasswordAge = ~0`
 
 The intersection of all three CSVs (join on SamAccountName) is the audit's
 highest-severity findings list. This persona is the worked example for that join.
@@ -180,8 +218,8 @@ ownership matrix so the next svc-legacy is impossible.
 **Configuration in the lab**:
 - No protected-group membership (`AdminCount = 0`)
 - `PasswordNeverExpires = true`
-- `lastLogonTimestamp` backdated 100 days
-- `pwdLastSet` backdated 600 days
+- Seed intent: inactive 100 days, password 600 days old. Observable in the lab:
+  never authenticated since creation, `PasswordAge = ~0` (see calibration note).
 
 **Real-world context**: executive who travels constantly, uses a personal laptop for
 most work, rarely touches the corporate AD-joined environment. IT enabled `PNE` "for
@@ -419,7 +457,8 @@ group as a managed object (owner, justification, review cadence).
 **Configuration in the lab**:
 - Standard user, no admin role
 - `PasswordNeverExpires = true`
-- `pwdLastSet` backdated 730 days
+- `PasswordAge = ~0` in the lab (uniform across seeded PNE accounts — see calibration
+  note). The scenario's narrative assumes a real 2-year-old password.
 
 **Real-world context**: a user complained about password reset prompts, escalated,
 helpdesk enabled `PNE` "just for them." Variant: an application required a static
@@ -434,7 +473,8 @@ Standalone this is a moderate finding; the higher-priority cousin is when `PNE` 
 on accounts with `AdminCount = 1` (Scenarios 2, 3, 4).
 
 **Detection**:
-- `Get-PasswordNeverExpires.ps1` → mid-report (`AdminCount = null`, `PasswordAge = 730`)
+- `Get-PasswordNeverExpires.ps1` → mid-report (`AdminCount = null`, `PasswordAge = ~0`
+  in the lab — see calibration note)
 
 **Remediation**: revoke `PNE`, force a password change at next logon, document the
 business reason if `PNE` is genuinely required (rare).
@@ -510,31 +550,35 @@ which case treat as a never-used-after-reset finding.
 The table below shows which seeded principals surface in each of the three reports.
 The two-or-three-cell rows are the highest-priority findings in any real audit.
 
+**All Inactive-column "yes" entries require `-IncludeNewlyCreated`** — every seeded
+account has `whenCreated = today` and would otherwise be excluded by the too-young
+filter (see calibration note and Scenario 7).
+
 | Persona            | Inactive | Privileged | PNE | Notes |
 |--------------------|:--------:|:----------:|:---:|---|
-| `svc-legacy`       | yes      | yes        | yes | Worst case — all 3 reports |
-| `sysadmin-legacy`  | yes      | yes        | yes | Triple finding |
-| `svc-backup`       | —        | yes        | yes | Kerberoasting target |
-| `mlefevre`         | yes      | yes        | —   | Stale DA |
+| `svc-legacy`       | yes      | yes        | yes | Worst case — all 3 reports (see Scenario 4) |
+| `sysadmin-legacy`  | yes      | yes        | yes | Triple finding (see Scenario 2) |
+| `svc-backup`       | —        | yes        | yes | Kerberoasting archetype (SPN pending — see Scenario 3) |
+| `mlefevre`         | yes      | yes        | —   | Stale DA (never-authenticated) |
 | `svc-sql`          | —        | yes        | yes | Backup Op + PNE |
-| `ccfo`             | yes      | —          | yes | Stale exec |
+| `ccfo`             | yes      | —          | yes | Stale exec + PNE |
 | `alopez`           | yes      | —          | yes | Stale HR + PNE |
 | `aceo`             | —        | yes        | —   | Excessive operator |
 | `jadams`           | —        | yes        | —   | Active DA (baseline good) |
 | `rmills`           | —        | —          | yes | Standalone PNE |
 | `pkim`             | —        | —          | yes | Standalone PNE |
-| `svc-monitor`      | —        | —          | yes | Service PNE |
-| `cstein`           | yes\*    | —          | —   | Never logged in |
-| `jthomas`          | yes\*    | —          | —   | Never logged in |
-| `svc-print`        | yes\*    | —          | —   | Never logged in (service) |
-| `ldubois`          | yes\*\*  | —          | —   | Too-young filter test |
+| `svc-monitor`      | —        | —          | yes | Service PNE (not privileged) |
+| `cstein`           | yes      | —          | —   | Provisioning ghost (never authenticated) |
+| `jthomas`          | yes      | —          | —   | Provisioning ghost |
+| `svc-print`        | yes      | —          | —   | Provisioning ghost (service) |
+| `ldubois`\*        | yes      | —          | —   | Too-young filter validation |
 | `jsmith`/`rpark`/`wlegacy` | — | —      | —   | Disabled — must NOT surface |
 
-\* Requires `-IncludeNewlyCreated` (whenCreated=today on all seeded users; see
-Scenario 7 for the reason).
-
-\*\* Surfaces ONLY with `-IncludeNewlyCreated`; absence without the switch validates the
-too-young filter (negative test).
+\* `ldubois` is functionally indistinguishable from `cstein` in observable state
+(both never authenticated, both created today) — the distinction lives in the account
+Description. The negative-test value of `ldubois` is preserved by running
+`Get-InactiveUsers.ps1` **without** `-IncludeNewlyCreated`: zero rows should be
+returned, confirming the too-young filter excludes every seeded user.
 
 ---
 
@@ -556,16 +600,23 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
 
 | Report                          | Expected rows | Notes |
 |---------------------------------|---------------|---|
-| `inactive.csv` (with switch)    | ~10           | 7 backdated + 3 never-logged-in + ldubois |
+| `inactive.csv` (with switch)    | 9             | 5 InactiveDays intent + 4 NeverLoggedIn — all observably `LastLogon = Never` (see calibration note) |
 | `inactive.csv` (without switch) | 0             | All seeded users excluded as too-young — validates the filter |
-| `privileged.csv`                | ~10           | Direct + Nested across DA / Backup Op / Account Op |
+| `privileged.csv`                | ~10           | Direct + Nested across DA / Backup Op / Account Op. Cross-check with `Step 10 — Force SDProp` in [lab-setup.md](lab-setup.md); adminCount is `$null` on fresh DA members until SDProp propagates |
 | `pne.csv`                       | 9             | Excludes disabled, excludes managed service accounts (none seeded) |
 
 ### Validation checks to perform
 
-1. **Top of `pne.csv`** should be `svc-legacy` (AdminCount=1, PasswordAge=1400 days).
-2. **Top of `inactive.csv`** should be `svc-legacy` then `sysadmin-legacy` then
-   `mlefevre` (AdminCount=1 sort priority, oldest LastLogon first within tier).
+1. **Top of `pne.csv`**: any of the four privileged PNE accounts
+   (`svc-backup`, `svc-legacy`, `svc-sql`, `sysadmin-legacy`). PasswordAge is uniform
+   in the lab (see calibration note), so the tiebreaker falls to SamAccountName
+   ascending — expect `svc-backup` first, then `svc-legacy`, `svc-sql`,
+   `sysadmin-legacy`. Below the privileged tier: `alopez`, `ccfo`, `pkim`, `rmills`,
+   `svc-monitor`.
+2. **Top of `inactive.csv`**: privileged never-authenticated accounts first —
+   `mlefevre`, `svc-legacy`, `sysadmin-legacy` (in SamAccountName order since the
+   `LastLogon = Never` tiebreaker leaves them equal). Below: `alopez`, `ccfo`,
+   `cstein`, `jthomas`, `ldubois`, `svc-print`. Total 9 rows.
 3. **`privileged.csv`** should contain rows for `jadams`, `mlefevre`, `svc-backup`,
    `svc-legacy` all tagged `Direct, Domain Admins`. `svc-sql` should appear
    `Direct, Backup Operators` and `Nested, Backup Operators` (the latter collapses
