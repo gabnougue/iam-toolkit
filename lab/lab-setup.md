@@ -61,6 +61,53 @@ If you have no preference, use **VirtualBox** on Windows/Linux or **UTM** on App
 Silicon. The rest of this guide is hypervisor-agnostic — you create a VM, attach an
 ISO, install Windows.
 
+### Alternative — Azure VM (replaces Steps 1–4)
+
+If you deploy the lab on Azure (or another public cloud), skip the ISO / VM-creation
+steps and follow this section instead. Rejoin the guide at Step 5 once you can RDP into
+Windows Server as the local admin.
+
+**Recommended settings** (verified against Azure on 26 August 2026):
+
+| Setting               | Value |
+|-----------------------|-------|
+| Image                 | *Windows Server 2022 Datacenter* from publisher **MicrosoftWindowsServer**. **Avoid** Azure Edition, Hotpatch, Server Core, and any *-smalldisk* variant. |
+| VM size               | `Standard_D2als_v7` (2 vCPU, 4 GB RAM). The B-series is frequently `NotAvailableForSubscription` in France Central — do not rely on it. |
+| Region                | Any that allows Windows Server. France Central works with the size above. |
+| Local admin username  | Anything **except `Administrator`** — Azure forbids it. `labadmin` is a good pick. |
+| Local admin password  | Anything satisfying the domain policy you will use later. Suggested: `LabAdmin!2026Demo`. |
+| Public inbound ports  | RDP (3389) — restrict source IP to your workstation. |
+| Virtual network       | New VNet, single subnet. Do NOT peer it to any production network. |
+| Disk                  | Standard SSD, default 128 GB is fine. |
+
+**Post-deploy configuration** (before jumping to Step 5):
+
+1. **Do NOT fix the IP inside Windows.** On Azure, the NIC gets its IP from Azure
+   DHCP. Setting a static IP inside Windows diverges from the platform view; the VM
+   survives one reboot then loses RDP for good. Fix the IP in the portal instead:
+   *Networking blade → Network interface → IP configurations → ipconfig1 → change
+   Assignment from Dynamic to Static → Save.*
+2. **DNS at the VNet level** (not inside Windows). For the DC to resolve `lab.local`
+   after promotion, DNS must point at the DC itself:
+   *Virtual network → DNS servers → Custom → add the VM's private IP → Save*, then
+   **reboot the VM** so the DHCP lease is renewed. Do not use Windows'
+   `Set-DnsClientServerAddress`.
+3. **Local admin account and RID**. Because Azure forbids the name `Administrator`,
+   the built-in admin is the account created at provisioning (in the example above,
+   `labadmin`). Its RID is `-500` — same well-known Administrator SID suffix.
+   Any detection script that filters on the account **name** would miss it. The
+   toolkit filters on group membership and `adminCount`, so this is a non-issue for
+   the shipped scripts; be aware if you extend them with name-based rules.
+
+**Cost hygiene**:
+
+- Stop the VM from the **Azure portal** (`Stop / Deallocate`), never from Windows.
+  Shutting down inside Windows leaves the VM in the "Stopped" (still allocated)
+  state and compute continues to bill.
+- Once deallocated, only storage is charged (a few euros / month for the OS disk).
+
+Rejoin the guide at **Step 5 — Install the Active Directory Domain Services role**.
+
 ---
 
 ## Step 1 — Download Windows Server ISO
@@ -287,16 +334,53 @@ cd iam-toolkit
 .\lab\seed-test-users.ps1
 ```
 
-Expected output: a summary block showing `UsersCreated = 31`, `OUsCreated = 6` (or
-`OUsExisting = 6` if you pre-created them in Step 7), `GroupsCreated = 5`,
-`MembershipsAdded = ~12`, and `LastLogonBackdated = 7`.
+Expected output: an upfront advisory that `lastLogonTimestamp` / `pwdLastSet` cannot
+be backdated via LDAP (this is expected; see the seed's `.NOTES`), then a summary
+block showing `UsersCreated = 31`, `OUsCreated = 6` (or `OUsExisting = 6` if you
+pre-created them in Step 7), `GroupsCreated = 5`, `MembershipsAdded = 15`, and
+zero warnings.
 
 Re-run the script to verify idempotency — all counters should report `Existing` /
 `Unchanged` on the second run.
 
 ---
 
-## Step 10 — Validate the lab
+## Step 10 — Force SDProp so adminCount propagates
+
+The seed just added several users to protected groups (`Domain Admins`, `Backup
+Operators`, `Account Operators`). Their `adminCount` attribute is set by the Security
+Descriptor Propagator (SDProp) task, which runs on the PDC emulator every **60 minutes
+of PDC uptime** — not calendar time. On a fresh lab whose DC has been up for less than
+an hour (typical on a cloud VM that was just started), SDProp has not run yet, and
+`Get-PrivilegedUsers.ps1` reports `AdminCount = $null` on every direct DA member.
+
+Force SDProp immediately (Domain Admin required):
+
+```powershell
+$root = [ADSI]"LDAP://RootDSE"
+$root.Put("runProtectAdminGroupsTask", 1)
+$root.SetInfo()
+```
+
+Wait 10–30 seconds, then verify:
+
+```powershell
+Get-ADUser -Filter "MemberOf -like '*Domain Admins*'" -Properties adminCount |
+    Select-Object SamAccountName, adminCount
+```
+
+Every direct DA member should now show `adminCount = 1`.
+
+This same phenomenon occurs in production — right after a remediation that adds a user
+to a protected group, right after a fresh compromise, or on a domain whose PDC has
+recently rebooted. `Get-PrivilegedUsers.ps1` documents the caveat in its `.NOTES` and
+its membership walk is authoritative regardless of `adminCount`, so a missed SDProp run
+does not change the group membership listing — only the `AdminCount` column
+prioritisation.
+
+---
+
+## Step 11 — Validate the lab
 
 Run each detection script and confirm the row counts match the expectations in
 [lab-scenarios.md](lab-scenarios.md#validation-walkthrough):
@@ -356,11 +440,19 @@ This is the safety check working as intended. Confirm `(Get-ADDomain).DNSRoot` r
 exactly `lab.local`. If it does and the check still fires, your shell is connected to a
 different domain context — open a new elevated PowerShell on the DC itself.
 
-### Seed script: backdating warnings on `lastLogonTimestamp`
+### Seed script: single upfront warning about backdating
 
-The script writes `lastLogonTimestamp` directly via `Set-ADObject`. This requires
-Domain Admin context. If you see warnings like `Access denied`, ensure you are running
-as `LAB\Administrator` (which is `Domain Admin` by default in a fresh forest).
+The current seed emits one advisory at the start explaining that `lastLogonTimestamp`
+and `pwdLastSet` cannot be aged via LDAP (`lastLogonTimestamp` is SAM-owned;
+`pwdLastSet` accepts only 0 and -1). This is expected and does not affect any of the
+seed's successful operations — the affected accounts appear as never-authenticated in
+`Get-InactiveUsers.ps1`, which is what the current lab scenarios assume. See the
+seed's `.NOTES` and [lab-scenarios.md](lab-scenarios.md) for the calibrated narrative.
+
+### `Get-PrivilegedUsers.ps1` returns `AdminCount = $null` on freshly added members
+
+Expected until SDProp propagates — see **Step 10** above for the forcing procedure.
+The membership rows themselves are correct; only the `AdminCount` column is empty.
 
 ### Detection scripts return zero rows for `inactive.csv` without `-IncludeNewlyCreated`
 
