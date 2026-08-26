@@ -40,46 +40,69 @@
     Uses a different password for seeded users.
 
 .NOTES
-    Misconfiguration coverage (exceeds CLAUDE.md spec minimums):
+    Misconfiguration coverage (as observed against the lab after seed run — the
+    inactivity intent is preserved via the InactiveDays / NeverLoggedIn markers on
+    New-LabUser, but AD prevents backdating lastLogonTimestamp via LDAP so both
+    kinds of accounts appear as never-authenticated in Get-InactiveUsers.ps1):
 
-      Inactive (lastLogonTimestamp backdated)  : 7  (spec: 5+)
-      Never logged in (lastLogonTimestamp null): 4  (spec: 2+)
-      Privileged (direct DA membership)        : 4  (spec: 3+)
-      Privileged (other sensitive groups)      : 3
-      PasswordNeverExpires set                 : 9  (spec: 5+)
-      Service account with DA                  : 2  (spec: 1+)
-      Empty/orphan groups                      : 2  (spec: 2+)
-      Nested group memberships (privilege)     : 2 chains
-      Must-change-at-next-logon                : 1  (edge-case finding)
+      Never-authenticated (visible with Get-InactiveUsers -IncludeNewlyCreated) : 9 enabled
+        - 5 carry InactiveDays intent  : mlefevre, sysadmin-legacy, alopez, ccfo, svc-legacy
+        - 4 carry NeverLoggedIn intent : cstein, ldubois, jthomas, svc-print
+      Privileged (direct DA membership)         : 4  (spec: 3+)
+      Privileged (other sensitive groups)       : 3
+      PasswordNeverExpires set                  : 9  (spec: 5+)
+      Service account with DA                   : 2  (spec: 1+)
+      Empty/orphan groups                       : 2  (spec: 2+)
+      Nested group memberships (privilege)      : 2 chains
+      Must-change-at-next-logon                 : 1  (edge-case finding)
 
     Cross-vector findings (the gold for lab demos):
-      svc-legacy        : DA + PNE + inactive 400d   - critical, surfaces in all 3 scripts
-      sysadmin-legacy   : BackupOp + PNE + inactive 250d  - triple-hit
-      svc-backup        : DA + PNE                    - Kerberoasting prime target
-      mlefevre          : DA + inactive 180d          - stale privileged
-      ldubois           : created today, never logged - demonstrates too-young filter
+      svc-legacy        : DA + PNE + never authenticated since creation — nobody
+                          knows what it is for, nobody watches it, and it holds DA
+      sysadmin-legacy   : BackupOp + PNE + never authenticated
+      svc-backup        : DA + PNE (Kerberoasting target — the SPN will be added
+                          when the seed is extended for Get-KerberosRisks.ps1)
+      mlefevre          : DA + never authenticated (stale-privileged semantic)
+      ldubois           : created today, never authenticated — demonstrates the
+                          too-young filter of Get-InactiveUsers.ps1
 
-    Why all seeded users have whenCreated = today:
-      The `whenCreated` AD attribute carries the schema flags OPERATIONAL + NO_USER_MODIFY,
-      so it cannot be backdated via LDAP. Run `Get-InactiveUsers.ps1 -IncludeNewlyCreated`
-      to bypass the too-young filter for lab validation. Without that switch, ldubois
-      (never logged in, created today) demonstrates the filter behaviour: all seeded
-      users are correctly excluded as too-young.
+    Why every seeded user has whenCreated = today AND appears never-authenticated:
+      Three AD-owned attributes cannot be backdated via LDAP writes, regardless of
+      caller privilege:
+        - whenCreated        - schema flags OPERATIONAL + NO_USER_MODIFY. Absolute refusal.
+        - lastLogonTimestamp - owned by the SAM ("Access to the attribute is not
+                               permitted because the attribute is owned by the
+                               Security Accounts Manager"). Populated only by real
+                               authentications.
+        - pwdLastSet         - accepts only 0 (force change at next logon) and -1
+                               (mark as just changed). Any past FileTime value is
+                               rejected with "The parameter is incorrect".
+      Consequences for the lab:
+        - InactiveDays and NeverLoggedIn are semantic markers (visible in the
+          account Description). They do NOT drive AD attribute writes.
+        - PasswordAge in the Get-PasswordNeverExpires.ps1 report is uniform (~seed
+          run day) across seeded accounts. The lab demonstrates PNE detection, not
+          age comparison across accounts.
+        - lab-scenarios.md is calibrated for this reality: privileged service
+          accounts never used since creation are themselves a finding at least as
+          severe as "inactive for 400 days".
 
-    Backdating that DOES work:
-      lastLogonTimestamp - writable; we set it to past FileTime values.
-      pwdLastSet         - writable; we set it for the PasswordAge column in the
-                           Get-PasswordNeverExpires.ps1 report.
+    Backdating that would work but is not attempted here:
+      Manipulating the DC clock (Set-Date on the DC while stopped, or Azure VM
+      snapshot / restore) can produce past PasswordLastSet values organically. That
+      belongs to a separate lab-helper if ever needed — the seed stays LDAP-only.
 
     Idempotency:
       OUs:           queried by Name under parent; created only if absent.
-      Users:         queried by SamAccountName; created if absent, updated if Description /
-                     Enabled / PasswordNeverExpires / ChangePasswordAtLogon differ.
+      Users:         queried by SamAccountName; created if absent, updated if
+                     Description / Enabled / PasswordNeverExpires /
+                     ChangePasswordAtLogon differ.
       Groups:        queried by Name; created if absent.
-      Memberships:   Get-ADGroupMember to check before Add-ADGroupMember.
+      Memberships:   Get-ADGroupMember checked before Add-ADGroupMember.
 
-    Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and Domain Admin
-    rights (to write lastLogonTimestamp and to add members to protected groups).
+    Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and Domain
+    Admin rights (to add members to protected groups; adminCount propagation depends
+    on SDProp scheduling — see lab-setup.md for the forcing procedure).
 #>
 
 [CmdletBinding()]
@@ -116,6 +139,15 @@ if ($domainName -ne 'lab.local' -and -not $Force) {
 
 Write-Host "Seeding lab domain: $domainName ($DomainDN)" -ForegroundColor Cyan
 
+# Single upfront advisory (replaces the per-account backdate warnings from earlier versions)
+Write-Warning @"
+Backdating notice: lastLogonTimestamp and pwdLastSet cannot be aged via LDAP writes
+(lastLogonTimestamp is SAM-owned, pwdLastSet accepts only 0 / -1). Accounts marked
+InactiveDays=N or NeverLoggedIn=true in the seed plan will appear as never-authenticated
+in Get-InactiveUsers.ps1 output. The semantic intent lives in each account's Description
+and in the seed plan itself. See the .NOTES block of this script for the full explanation.
+"@
+
 # --- Summary state ---
 $summary = [PSCustomObject]@{
     OUsCreated             = 0
@@ -127,8 +159,6 @@ $summary = [PSCustomObject]@{
     GroupsExisting         = 0
     MembershipsAdded       = 0
     MembershipsExisting    = 0
-    LastLogonBackdated     = 0
-    PwdLastSetBackdated    = 0
     Warnings               = New-Object System.Collections.Generic.List[string]
 }
 
@@ -152,56 +182,6 @@ function New-LabOU {
     catch {
         $script:summary.Warnings.Add("OU '$Name' create failed: $($_.Exception.Message)")
         throw
-    }
-}
-
-function Set-LabBackdate {
-    param(
-        [Parameter(Mandatory)][string]$Sam,
-        [Parameter()][int]$InactiveDays,
-        [Parameter()][bool]$NeverLoggedIn,
-        [Parameter()][int]$PasswordAgeDays
-    )
-
-    $user = Get-ADUser -Identity $Sam -Properties lastLogonTimestamp, pwdLastSet -ErrorAction Stop
-
-    if ($NeverLoggedIn) {
-        if ($user.lastLogonTimestamp) {
-            try {
-                Set-ADObject -Identity $user.DistinguishedName -Clear lastLogonTimestamp -ErrorAction Stop
-            }
-            catch {
-                $script:summary.Warnings.Add("Clear lastLogonTimestamp on '$Sam' failed: $($_.Exception.Message)")
-            }
-        }
-    }
-    elseif ($InactiveDays -gt 0) {
-        $targetTs = (Get-Date).AddDays(-$InactiveDays).ToFileTime()
-        if ($user.lastLogonTimestamp -ne $targetTs) {
-            try {
-                Set-ADObject -Identity $user.DistinguishedName -Replace @{lastLogonTimestamp = $targetTs} -ErrorAction Stop
-                $script:summary.LastLogonBackdated++
-            }
-            catch {
-                $script:summary.Warnings.Add("Backdate lastLogonTimestamp on '$Sam' failed: $($_.Exception.Message)")
-            }
-        }
-    }
-
-    if ($PasswordAgeDays -gt 0) {
-        $targetPwd = (Get-Date).AddDays(-$PasswordAgeDays).ToFileTime()
-        # pwdLastSet may differ slightly from creation time; only rewrite if more than 1 day off
-        $current = if ($user.pwdLastSet) { [DateTime]::FromFileTime($user.pwdLastSet) } else { $null }
-        $target  = [DateTime]::FromFileTime($targetPwd)
-        if ((-not $current) -or ([Math]::Abs(($current - $target).TotalDays) -gt 1)) {
-            try {
-                Set-ADObject -Identity $user.DistinguishedName -Replace @{pwdLastSet = $targetPwd} -ErrorAction Stop
-                $script:summary.PwdLastSetBackdated++
-            }
-            catch {
-                $script:summary.Warnings.Add("Backdate pwdLastSet on '$Sam' failed: $($_.Exception.Message)")
-            }
-        }
     }
 }
 
@@ -231,9 +211,11 @@ function New-LabUser {
         [Parameter()][bool]$PNE = $false,
         [Parameter()][bool]$ChangePasswordAtLogon = $false,
         [Parameter()][bool]$Disabled = $false,
+        # Semantic-only markers: preserved so the seed plan carries pedagogical
+        # intent (readable in the plan and echoed in the Description). NOT applied
+        # to lastLogonTimestamp — that attribute is SAM-owned and refuses LDAP writes.
         [Parameter()][bool]$NeverLoggedIn = $false,
         [Parameter()][int]$InactiveDays = 0,
-        [Parameter()][int]$PasswordAgeDays = 0,
         [Parameter()][string[]]$AddToGroups = @()
     )
 
@@ -241,7 +223,6 @@ function New-LabUser {
     $existing = Get-ADUser -Filter "SamAccountName -eq `"$Sam`"" -Properties Description, PasswordNeverExpires, Enabled -ErrorAction SilentlyContinue
 
     if (-not $existing) {
-        # Create
         $securePwd = ConvertTo-SecureString $DefaultPassword -AsPlainText -Force
         $parts = $Name -split ' ', 2
         $first = $parts[0]
@@ -294,9 +275,6 @@ function New-LabUser {
         }
     }
 
-    # Backdate logon / password attributes
-    Set-LabBackdate -Sam $Sam -InactiveDays $InactiveDays -NeverLoggedIn $NeverLoggedIn -PasswordAgeDays $PasswordAgeDays
-
     # Group memberships
     foreach ($g in $AddToGroups) { Add-LabGroupMember -Group $g -MemberSam $Sam }
 }
@@ -340,29 +318,31 @@ function New-LabGroup {
 $ouNames = 'IT', 'HR', 'Finance', 'Management', 'Service Accounts', 'Disabled Users'
 foreach ($ou in $ouNames) { [void] (New-LabOU -Name $ou -ParentDN $DomainDN) }
 
-# Users (31 total) — clustered to produce realistic cross-vector findings
+# Users (31 total) — clustered to produce realistic cross-vector findings.
+# NOTE: PasswordAgeDays was removed after the 26-Aug-2026 lab run — pwdLastSet only
+# accepts 0 / -1 via LDAP. InactiveDays / NeverLoggedIn remain as semantic markers.
 $users = @(
     # IT (8) — privileged + stale + legacy
     @{ Sam='jadams';          Name='James Adams';        OU='IT'; Description="$marker IT admin, active, Direct DA";                              AddToGroups=@('Domain Admins') }
-    @{ Sam='mlefevre';        Name='Marc Lefevre';       OU='IT'; Description="$marker Stale DA - inactive 180d (cross-vector finding)";          AddToGroups=@('Domain Admins'); InactiveDays=180 }
-    @{ Sam='sysadmin-legacy'; Name='Legacy Sysadmin';    OU='IT'; Description="$marker Triple finding: BackupOp + PNE + inactive 250d";           AddToGroups=@('Backup Operators'); PNE=$true; InactiveDays=250; PasswordAgeDays=900 }
+    @{ Sam='mlefevre';        Name='Marc Lefevre';       OU='IT'; Description="$marker Stale DA - intent inactive 180d (appears never-authenticated in reports)";          AddToGroups=@('Domain Admins'); InactiveDays=180 }
+    @{ Sam='sysadmin-legacy'; Name='Legacy Sysadmin';    OU='IT'; Description="$marker Triple finding: BackupOp + PNE + intent inactive 250d";           AddToGroups=@('Backup Operators'); PNE=$true; InactiveDays=250 }
     @{ Sam='ptaylor';         Name='Patricia Taylor';    OU='IT'; Description="$marker Must change password at next logon";                       ChangePasswordAtLogon=$true }
     @{ Sam='akovach';         Name='Anna Kovach';        OU='IT'; Description="$marker Normal IT user (baseline)" }
-    @{ Sam='rmills';          Name='Robert Mills';       OU='IT'; Description="$marker PNE set, password ~2y old";                                PNE=$true; PasswordAgeDays=730 }
+    @{ Sam='rmills';          Name='Robert Mills';       OU='IT'; Description="$marker PNE set (uniform PasswordAge across seeded PNE accounts)";                                PNE=$true }
     @{ Sam='cstein';          Name='Catherine Stein';    OU='IT'; Description="$marker Provisioning leftover - never logged in";                  NeverLoggedIn=$true }
-    @{ Sam='ldubois';         Name='Lucas Dubois';       OU='IT'; Description="$marker Edge case: created today, never logged in (too-young filter)"; NeverLoggedIn=$true }
+    @{ Sam='ldubois';         Name='Lucas Dubois';       OU='IT'; Description="$marker Edge case: created today, never logged in (too-young filter demo)"; NeverLoggedIn=$true }
 
     # HR (6) — mostly normal + a stale PNE
     @{ Sam='mbianchi';        Name='Maria Bianchi';      OU='HR'; Description="$marker HR manager" }
     @{ Sam='ksimon';          Name='Karen Simon';        OU='HR'; Description="$marker HR analyst" }
-    @{ Sam='alopez';          Name='Ana Lopez';          OU='HR'; Description="$marker PNE + inactive 120d";                                      PNE=$true; InactiveDays=120; PasswordAgeDays=540 }
+    @{ Sam='alopez';          Name='Ana Lopez';          OU='HR'; Description="$marker PNE + intent inactive 120d";                                      PNE=$true; InactiveDays=120 }
     @{ Sam='jthomas';         Name='John Thomas';        OU='HR'; Description="$marker Never logged in (HR ghost)";                               NeverLoggedIn=$true }
     @{ Sam='ewright';         Name='Emily Wright';       OU='HR'; Description="$marker Normal HR user" }
     @{ Sam='dweber';          Name='Daniel Weber';       OU='HR'; Description="$marker Normal HR user" }
 
     # Finance (5)
     @{ Sam='gnakamura';       Name='Gen Nakamura';       OU='Finance'; Description="$marker Finance director" }
-    @{ Sam='pkim';            Name='Paul Kim';           OU='Finance'; Description="$marker PNE set";                                              PNE=$true; PasswordAgeDays=400 }
+    @{ Sam='pkim';            Name='Paul Kim';           OU='Finance'; Description="$marker PNE set";                                              PNE=$true }
     @{ Sam='msanchez';        Name='Maria Sanchez';      OU='Finance'; Description="$marker Normal finance user" }
     @{ Sam='tbrown';          Name='Thomas Brown';       OU='Finance'; Description="$marker Normal finance user" }
     @{ Sam='hwhite';          Name='Henry White';        OU='Finance'; Description="$marker Normal finance user" }
@@ -370,18 +350,18 @@ $users = @(
     # Management (4) — excessive privilege + PNE on a key role
     @{ Sam='aceo';            Name='Alex CEO';           OU='Management'; Description="$marker CEO with excessive Account Operators privilege";  AddToGroups=@('Account Operators') }
     @{ Sam='bcoo';            Name='Brian COO';          OU='Management'; Description="$marker Normal exec" }
-    @{ Sam='ccfo';            Name='Catherine CFO';      OU='Management'; Description="$marker CFO with PNE + inactive 100d";                    PNE=$true; InactiveDays=100; PasswordAgeDays=600 }
+    @{ Sam='ccfo';            Name='Catherine CFO';      OU='Management'; Description="$marker CFO with PNE + intent inactive 100d";                    PNE=$true; InactiveDays=100 }
     @{ Sam='dvp';             Name='David VP';           OU='Management'; Description="$marker Normal VP" }
 
     # Service Accounts (5) — the high-value findings
-    @{ Sam='svc-backup';      Name='svc-backup';         OU='Service Accounts'; Description="$marker Legacy service account: DA + PNE (Kerberoasting target)"; AddToGroups=@('Domain Admins');      PNE=$true; PasswordAgeDays=1100 }
-    @{ Sam='svc-sql';         Name='svc-sql';            OU='Service Accounts'; Description="$marker BackupOp + PNE";                                          AddToGroups=@('Backup Operators');   PNE=$true; PasswordAgeDays=800 }
+    @{ Sam='svc-backup';      Name='svc-backup';         OU='Service Accounts'; Description="$marker Legacy service account: DA + PNE (Kerberoasting target; SPN pending for Get-KerberosRisks)"; AddToGroups=@('Domain Admins');      PNE=$true }
+    @{ Sam='svc-sql';         Name='svc-sql';            OU='Service Accounts'; Description="$marker BackupOp + PNE";                                          AddToGroups=@('Backup Operators');   PNE=$true }
     @{ Sam='svc-print';       Name='svc-print';          OU='Service Accounts'; Description="$marker Service account never logged in (dead service?)";          NeverLoggedIn=$true }
-    @{ Sam='svc-monitor';     Name='svc-monitor';        OU='Service Accounts'; Description="$marker PNE, no admin";                                            PNE=$true; PasswordAgeDays=300 }
-    @{ Sam='svc-legacy';      Name='svc-legacy';         OU='Service Accounts'; Description="$marker WORST CASE: DA + PNE + inactive 400d";                     AddToGroups=@('Domain Admins');      PNE=$true; InactiveDays=400; PasswordAgeDays=1400 }
+    @{ Sam='svc-monitor';     Name='svc-monitor';        OU='Service Accounts'; Description="$marker PNE, no admin";                                            PNE=$true }
+    @{ Sam='svc-legacy';      Name='svc-legacy';         OU='Service Accounts'; Description="$marker WORST CASE: DA + PNE + never authenticated since creation";                     AddToGroups=@('Domain Admins');      PNE=$true; InactiveDays=400 }
 
     # Disabled Users (3) — should NOT appear in default-mode reports
-    @{ Sam='jsmith';          Name='Jane Smith';         OU='Disabled Users'; Description="$marker Disabled, was inactive";                       Disabled=$true; InactiveDays=300 }
+    @{ Sam='jsmith';          Name='Jane Smith';         OU='Disabled Users'; Description="$marker Disabled, intent inactive 300d";                       Disabled=$true; InactiveDays=300 }
     @{ Sam='rpark';           Name='Ryan Park';          OU='Disabled Users'; Description="$marker Disabled, normal";                             Disabled=$true }
     @{ Sam='wlegacy';         Name='Walter Legacy';      OU='Disabled Users'; Description="$marker Disabled former DA member";                    Disabled=$true; InactiveDays=500 }
 )
@@ -421,7 +401,13 @@ else {
 }
 
 Write-Host ""
-Write-Host "Validate with:" -ForegroundColor Cyan
-Write-Host "  ..\scripts\powershell\Get-InactiveUsers.ps1        -IncludeNewlyCreated"
-Write-Host "  ..\scripts\powershell\Get-PrivilegedUsers.ps1"
-Write-Host "  ..\scripts\powershell\Get-PasswordNeverExpires.ps1"
+Write-Host "Next step: force SDProp so adminCount propagates immediately to the new" -ForegroundColor Cyan
+Write-Host "  members of protected groups (otherwise Get-PrivilegedUsers under-reports" -ForegroundColor Cyan
+Write-Host "  until SDProp runs — every 60 min of PDC uptime, not wall-clock time)." -ForegroundColor Cyan
+Write-Host "  See lab-setup.md for the one-liner and the rationale." -ForegroundColor Cyan
+
+Write-Host ""
+Write-Host "Validate with (from the repository root):" -ForegroundColor Cyan
+Write-Host "  .\scripts\powershell\Get-InactiveUsers.ps1        -IncludeNewlyCreated"
+Write-Host "  .\scripts\powershell\Get-PrivilegedUsers.ps1"
+Write-Host "  .\scripts\powershell\Get-PasswordNeverExpires.ps1"
