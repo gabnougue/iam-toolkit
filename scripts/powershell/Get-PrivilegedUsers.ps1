@@ -204,7 +204,11 @@ function Resolve-GroupMembership {
         [Parameter(Mandatory)][string]$TargetGroupName,
         [Parameter(Mandatory)][string]$CurrentGroupDN,
         [Parameter(Mandatory)][bool]$IsRoot,
-        [Parameter(Mandatory)][System.Collections.Generic.HashSet[string]]$VisitedGroups
+        # The first call always passes an empty HashSet; PowerShell's Mandatory
+        # validation on typed collections rejects that unless AllowEmptyCollection is set.
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.HashSet[string]]$VisitedGroups
     )
 
     # Cycle guard: AD prevents cycles in well-formed environments, but defend regardless
