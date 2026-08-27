@@ -9,7 +9,7 @@
     the metadata an auditor needs to prioritize: ObjectClass, Enabled state, PasswordAge
     in days, AdminCount, and DistinguishedName.
 
-    Disabled accounts are excluded by default — a disabled-with-PNE account is hygiene,
+    Disabled accounts are excluded by default - a disabled-with-PNE account is hygiene,
     not exposure. Use -IncludeDisabled to surface them anyway (relevant when auditing
     accounts like KRBTGT whose password rotation cadence is itself worth reviewing).
 
@@ -17,7 +17,7 @@
     rotate passwords automatically via msDS-ManagedPassword. Use
     -IncludeManagedServiceAccounts to include them for completeness.
 
-    Privileged accounts (AdminCount=1) are surfaced at the top of the report — a
+    Privileged accounts (AdminCount=1) are surfaced at the top of the report - a
     privileged account with a non-expiring password is the highest-priority finding,
     especially if it also has a Service Principal Name (Kerberoasting target with an
     offline-crackable hash that doesn't rotate).
@@ -32,7 +32,7 @@
 
 .PARAMETER SearchBase
     Distinguished name of an OU to scope the search. Applied to both the user/computer
-    query and (when -IncludeManagedServiceAccounts is set) the service account query —
+    query and (when -IncludeManagedServiceAccounts is set) the service account query -
     note that managed service accounts live in `CN=Managed Service Accounts,DC=...`
     by default, so a narrow SearchBase will silently exclude them.
 
@@ -71,7 +71,7 @@
         A privileged service account with a Service Principal Name (SPN) is a prime
         Kerberoasting target: any authenticated user can request a TGS for the SPN and
         crack the resulting hash offline. When PNE is set, the attacker has unlimited
-        time — the password the cracker eventually recovers is still valid years later.
+        time - the password the cracker eventually recovers is still valid years later.
 
       Common causes
         - Legacy service accounts created before gMSAs existed.
@@ -104,7 +104,7 @@
 
     Sort order:
       AdminCount=1 first, then known PasswordAge before null (pwdLastSet=0 means
-      "must change at next logon" — a distinct finding), then PasswordAge descending
+      "must change at next logon" - a distinct finding), then PasswordAge descending
       (oldest passwords first), then SamAccountName.
 
     Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and read access

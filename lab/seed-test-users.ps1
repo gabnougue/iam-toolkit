@@ -40,7 +40,7 @@
     Uses a different password for seeded users.
 
 .NOTES
-    Misconfiguration coverage (as observed against the lab after seed run — the
+    Misconfiguration coverage (as observed against the lab after seed run - the
     inactivity intent is preserved via the InactiveDays / NeverLoggedIn markers on
     New-LabUser, but AD prevents backdating lastLogonTimestamp via LDAP so both
     kinds of accounts appear as never-authenticated in Get-InactiveUsers.ps1):
@@ -57,13 +57,13 @@
       Must-change-at-next-logon                 : 1  (edge-case finding)
 
     Cross-vector findings (the gold for lab demos):
-      svc-legacy        : DA + PNE + never authenticated since creation — nobody
+      svc-legacy        : DA + PNE + never authenticated since creation - nobody
                           knows what it is for, nobody watches it, and it holds DA
       sysadmin-legacy   : BackupOp + PNE + never authenticated
-      svc-backup        : DA + PNE (Kerberoasting target — the SPN will be added
+      svc-backup        : DA + PNE (Kerberoasting target - the SPN will be added
                           when the seed is extended for Get-KerberosRisks.ps1)
       mlefevre          : DA + never authenticated (stale-privileged semantic)
-      ldubois           : created today, never authenticated — demonstrates the
+      ldubois           : created today, never authenticated - demonstrates the
                           too-young filter of Get-InactiveUsers.ps1
 
     Why every seeded user has whenCreated = today AND appears never-authenticated:
@@ -90,7 +90,7 @@
     Backdating that would work but is not attempted here:
       Manipulating the DC clock (Set-Date on the DC while stopped, or Azure VM
       snapshot / restore) can produce past PasswordLastSet values organically. That
-      belongs to a separate lab-helper if ever needed — the seed stays LDAP-only.
+      belongs to a separate lab-helper if ever needed - the seed stays LDAP-only.
 
     Idempotency:
       OUs:           queried by Name under parent; created only if absent.
@@ -102,7 +102,7 @@
 
     Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and Domain
     Admin rights (to add members to protected groups; adminCount propagation depends
-    on SDProp scheduling — see lab-setup.md for the forcing procedure).
+    on SDProp scheduling - see lab-setup.md for the forcing procedure).
 #>
 
 [CmdletBinding()]
@@ -213,7 +213,7 @@ function New-LabUser {
         [Parameter()][bool]$Disabled = $false,
         # Semantic-only markers: preserved so the seed plan carries pedagogical
         # intent (readable in the plan and echoed in the Description). NOT applied
-        # to lastLogonTimestamp — that attribute is SAM-owned and refuses LDAP writes.
+        # to lastLogonTimestamp - that attribute is SAM-owned and refuses LDAP writes.
         [Parameter()][bool]$NeverLoggedIn = $false,
         [Parameter()][int]$InactiveDays = 0,
         [Parameter()][string[]]$AddToGroups = @()
@@ -318,11 +318,11 @@ function New-LabGroup {
 $ouNames = 'IT', 'HR', 'Finance', 'Management', 'Service Accounts', 'Disabled Users'
 foreach ($ou in $ouNames) { [void] (New-LabOU -Name $ou -ParentDN $DomainDN) }
 
-# Users (31 total) — clustered to produce realistic cross-vector findings.
-# NOTE: PasswordAgeDays was removed after the 26-Aug-2026 lab run — pwdLastSet only
+# Users (31 total) - clustered to produce realistic cross-vector findings.
+# NOTE: PasswordAgeDays was removed after the 26-Aug-2026 lab run - pwdLastSet only
 # accepts 0 / -1 via LDAP. InactiveDays / NeverLoggedIn remain as semantic markers.
 $users = @(
-    # IT (8) — privileged + stale + legacy
+    # IT (8) - privileged + stale + legacy
     @{ Sam='jadams';          Name='James Adams';        OU='IT'; Description="$marker IT admin, active, Direct DA";                              AddToGroups=@('Domain Admins') }
     @{ Sam='mlefevre';        Name='Marc Lefevre';       OU='IT'; Description="$marker Stale DA - intent inactive 180d (appears never-authenticated in reports)";          AddToGroups=@('Domain Admins'); InactiveDays=180 }
     @{ Sam='sysadmin-legacy'; Name='Legacy Sysadmin';    OU='IT'; Description="$marker Triple finding: BackupOp + PNE + intent inactive 250d";           AddToGroups=@('Backup Operators'); PNE=$true; InactiveDays=250 }
@@ -332,7 +332,7 @@ $users = @(
     @{ Sam='cstein';          Name='Catherine Stein';    OU='IT'; Description="$marker Provisioning leftover - never logged in";                  NeverLoggedIn=$true }
     @{ Sam='ldubois';         Name='Lucas Dubois';       OU='IT'; Description="$marker Edge case: created today, never logged in (too-young filter demo)"; NeverLoggedIn=$true }
 
-    # HR (6) — mostly normal + a stale PNE
+    # HR (6) - mostly normal + a stale PNE
     @{ Sam='mbianchi';        Name='Maria Bianchi';      OU='HR'; Description="$marker HR manager" }
     @{ Sam='ksimon';          Name='Karen Simon';        OU='HR'; Description="$marker HR analyst" }
     @{ Sam='alopez';          Name='Ana Lopez';          OU='HR'; Description="$marker PNE + intent inactive 120d";                                      PNE=$true; InactiveDays=120 }
@@ -347,20 +347,20 @@ $users = @(
     @{ Sam='tbrown';          Name='Thomas Brown';       OU='Finance'; Description="$marker Normal finance user" }
     @{ Sam='hwhite';          Name='Henry White';        OU='Finance'; Description="$marker Normal finance user" }
 
-    # Management (4) — excessive privilege + PNE on a key role
+    # Management (4) - excessive privilege + PNE on a key role
     @{ Sam='aceo';            Name='Alex CEO';           OU='Management'; Description="$marker CEO with excessive Account Operators privilege";  AddToGroups=@('Account Operators') }
     @{ Sam='bcoo';            Name='Brian COO';          OU='Management'; Description="$marker Normal exec" }
     @{ Sam='ccfo';            Name='Catherine CFO';      OU='Management'; Description="$marker CFO with PNE + intent inactive 100d";                    PNE=$true; InactiveDays=100 }
     @{ Sam='dvp';             Name='David VP';           OU='Management'; Description="$marker Normal VP" }
 
-    # Service Accounts (5) — the high-value findings
+    # Service Accounts (5) - the high-value findings
     @{ Sam='svc-backup';      Name='svc-backup';         OU='Service Accounts'; Description="$marker Legacy service account: DA + PNE (Kerberoasting target; SPN pending for Get-KerberosRisks)"; AddToGroups=@('Domain Admins');      PNE=$true }
     @{ Sam='svc-sql';         Name='svc-sql';            OU='Service Accounts'; Description="$marker BackupOp + PNE";                                          AddToGroups=@('Backup Operators');   PNE=$true }
     @{ Sam='svc-print';       Name='svc-print';          OU='Service Accounts'; Description="$marker Service account never logged in (dead service?)";          NeverLoggedIn=$true }
     @{ Sam='svc-monitor';     Name='svc-monitor';        OU='Service Accounts'; Description="$marker PNE, no admin";                                            PNE=$true }
     @{ Sam='svc-legacy';      Name='svc-legacy';         OU='Service Accounts'; Description="$marker WORST CASE: DA + PNE + never authenticated since creation";                     AddToGroups=@('Domain Admins');      PNE=$true; InactiveDays=400 }
 
-    # Disabled Users (3) — should NOT appear in default-mode reports
+    # Disabled Users (3) - should NOT appear in default-mode reports
     @{ Sam='jsmith';          Name='Jane Smith';         OU='Disabled Users'; Description="$marker Disabled, intent inactive 300d";                       Disabled=$true; InactiveDays=300 }
     @{ Sam='rpark';           Name='Ryan Park';          OU='Disabled Users'; Description="$marker Disabled, normal";                             Disabled=$true }
     @{ Sam='wlegacy';         Name='Walter Legacy';      OU='Disabled Users'; Description="$marker Disabled former DA member";                    Disabled=$true; InactiveDays=500 }
@@ -372,7 +372,7 @@ foreach ($u in $users) {
     New-LabUser @params
 }
 
-# Groups (5) — empty/orphan + nesting chains
+# Groups (5) - empty/orphan + nesting chains
 $groups = @(
     @{ Name='GG-IT-Admins';               OU='IT';               Description="$marker IT admin group, nested in Domain Admins";       Members=@('jadams','mlefevre');   NestedIn=@('Domain Admins') }
     @{ Name='GG-Finance-ReadOnly';        OU='Finance';          Description="$marker Finance read-only group (normal baseline)";     Members=@('gnakamura','pkim','tbrown') }
@@ -403,7 +403,7 @@ else {
 Write-Host ""
 Write-Host "Next step: force SDProp so adminCount propagates immediately to the new" -ForegroundColor Cyan
 Write-Host "  members of protected groups (otherwise Get-PrivilegedUsers under-reports" -ForegroundColor Cyan
-Write-Host "  until SDProp runs — every 60 min of PDC uptime, not wall-clock time)." -ForegroundColor Cyan
+Write-Host "  until SDProp runs - every 60 min of PDC uptime, not wall-clock time)." -ForegroundColor Cyan
 Write-Host "  See lab-setup.md for the one-liner and the rationale." -ForegroundColor Cyan
 
 Write-Host ""

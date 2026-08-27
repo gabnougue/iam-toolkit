@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Walks the membership of a configurable list of high-privilege AD groups (13 by default,
-    covering forest, domain, and Built-in scopes — see -Groups). For every leaf principal
+    covering forest, domain, and Built-in scopes - see -Groups). For every leaf principal
     (user, computer, gMSA, FSP) reachable through these groups, the script reports whether
     the membership is Direct or Nested, plus the metadata an auditor needs to triage:
     ObjectClass, Enabled state, AdminCount, and DistinguishedName.
@@ -70,18 +70,18 @@
         AdminSDHolder protected set. Sufficient to pivot to Domain Admin in many setups.
 
       Backup Operators
-        Holds SeBackupPrivilege on DCs — can read NTDS.dit and the SYSTEM hive, then
+        Holds SeBackupPrivilege on DCs - can read NTDS.dit and the SYSTEM hive, then
         extract the krbtgt hash offline and forge Golden Tickets. Full domain compromise.
 
       Server Operators
-        Can stop/start services and modify service binaries on DCs — privesc to SYSTEM.
+        Can stop/start services and modify service binaries on DCs - privesc to SYSTEM.
 
       Print Operators
-        Can load printer drivers on DCs (SeLoadDriverPrivilege) — code execution path.
+        Can load printer drivers on DCs (SeLoadDriverPrivilege) - code execution path.
 
       DnsAdmins
         The DNS service runs as SYSTEM on DCs. Members can configure a server-level plugin
-        (ServerLevelPluginDll) loaded by the service — code execution as SYSTEM on the DC.
+        (ServerLevelPluginDll) loaded by the service - code execution as SYSTEM on the DC.
 
       Group Policy Creator Owners
         Can create GPOs. If a created GPO is later linked to a sensitive OU, the creator
@@ -102,19 +102,19 @@
     Default nesting in AD:
       Domain Admins and Enterprise Admins are themselves Direct members of the Built-in
       Administrators group at provisioning time. This is normal AD architecture, not a
-      finding — expect rows showing Domain Admins members as Nested in Administrators.
+      finding - expect rows showing Domain Admins members as Nested in Administrators.
 
     Known LDAP limitation:
       The `member` attribute is range-limited by AD to 5000 values per fetch. Privileged
       groups with more than 5000 direct members would be silently truncated. In practice
-      this never happens — a privileged group with thousands of direct members is itself
-      a critical finding (and almost always indicates a control misconfiguration) — but
+      this never happens - a privileged group with thousands of direct members is itself
+      a critical finding (and almost always indicates a control misconfiguration) - but
       the limitation is noted here for transparency.
 
-    adminCount and SDProp — read this before trusting the AdminCount column:
+    adminCount and SDProp - read this before trusting the AdminCount column:
       adminCount is not set at the moment a principal is added to a protected group.
       It is set by the SDProp (Security Descriptor Propagator) task, which runs on
-      the PDC emulator every 60 minutes of *PDC uptime* — not calendar time. On a
+      the PDC emulator every 60 minutes of *PDC uptime* - not calendar time. On a
       lab cloud VM that is deallocated most of the day, or on a DC that was just
       promoted, SDProp may never have run yet: the new DA member exists in the
       Domain Admins `member` list but adminCount is still empty, and this script's
@@ -125,7 +125,7 @@
         - Right after a fresh compromise where the attacker added themselves.
         - On a domain whose PDC emulator has recently rebooted.
       In all of these cases an audit based on adminCount will UNDER-REPORT. The
-      membership walk in this script is authoritative regardless of adminCount —
+      membership walk in this script is authoritative regardless of adminCount -
       always cross-check the GroupName column, not just AdminCount.
 
       Forcing SDProp (Domain Admin only):
@@ -193,7 +193,7 @@ function ConvertTo-PrivilegedRow {
     $type = if ($IsDirect) { 'Direct' } else { 'Nested' }
 
     if ($AdObject.objectClass -eq 'foreignSecurityPrincipal') {
-        # FSP CN is the SID of the foreign principal — use it as the identifier
+        # FSP CN is the SID of the foreign principal - use it as the identifier
         # since sAMAccountName is not populated for cross-forest principals
         return [PSCustomObject]@{
             SamAccountName    = $AdObject.Name

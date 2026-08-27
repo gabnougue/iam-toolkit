@@ -14,7 +14,7 @@
     are included via Get-ADServiceAccount. An inactive service account is a dead service
     that should be decommissioned and is just as much an IAM hygiene issue as a stale user.
 
-    Privileged accounts (AdminCount=1) are surfaced at the top of the report — a stale
+    Privileged accounts (AdminCount=1) are surfaced at the top of the report - a stale
     privileged account is the highest-priority finding.
 
 .PARAMETER DaysInactive
@@ -29,7 +29,7 @@
 .PARAMETER Server
     Specific domain controller to query for the initial principal listing. Under
     -AccurateMode this DC's per-DC `lastLogon` values are captured during the listing pass
-    and the per-DC scan deliberately skips it — no DC is queried twice.
+    and the per-DC scan deliberately skips it - no DC is queried twice.
 
 .PARAMETER AccurateMode
     Queries every domain controller for the per-DC `lastLogon` attribute (NOT replicated;
@@ -70,7 +70,7 @@
       A principal is reported when:
         - whenCreated <= cutoff (it has been around long enough to have logged on), AND
         - lastLogon is null OR lastLogon < cutoff.
-      Principals younger than the cutoff are excluded — they have not had time to log on.
+      Principals younger than the cutoff are excluded - they have not had time to log on.
       The exclusion is suppressed by -IncludeNewlyCreated (post-migration audits, lab
       validation against fresh fixtures: `whenCreated` is system-protected and cannot
       be backdated, so seeded test users would otherwise be silently dropped).
@@ -96,7 +96,7 @@
     System accounts:
       KRBTGT, Guest, and DefaultAccount are disabled by default and naturally excluded
       by the Enabled=true filter. The built-in Administrator user is enabled by default
-      and will appear in the report if it is dormant — that itself is a legitimate
+      and will appear in the report if it is dormant - that itself is a legitimate
       finding (the account should either be used regularly with strong controls in
       place, or disabled in favor of named admin accounts).
 
