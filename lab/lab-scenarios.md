@@ -37,6 +37,24 @@ Scenarios below have been rewritten to reflect this reality. The threat models r
 identical — only the observable signal changes from "N days idle" to "never
 authenticated since creation".
 
+### A criterion that matches 100% of the perimeter is not a criterion
+
+The 27 August re-run confirmed the point: `inactive.csv` returns **every enabled
+account** in the lab (28 rows out of 31 — all users minus the 3 disabled). That is not
+a symptom of a dormant estate; it is a symptom of the observable being uniform across
+the seeded surface. **In a real audit, an inactivity column that surfaces the entire
+perimeter means the directory-side data is not exploitable** — typical causes: a
+freshly migrated tenant where `lastLogonTimestamp` has not yet caught up, replication
+broken, `msDS-LogonTimeSyncInterval` misconfigured, or a truly dormant window that
+pre-dates the retention of authentication logs. The next step then is not "everyone is
+dormant, disable them all" but to walk to the authentication telemetry (event 4624
+across DCs, sign-in logs, whatever the environment exposes) and treat the directory
+column as noise.
+
+The lab preserves this reality: `inactive.csv` is retained as a data source but the
+prioritisation happens on the intersection with `privileged.csv` and `pne.csv`, not on
+the inactivity column alone.
+
 ---
 
 ## Scenario 1 — Stale Domain Admin
@@ -550,29 +568,36 @@ which case treat as a never-used-after-reset finding.
 The table below shows which seeded principals surface in each of the three reports.
 The two-or-three-cell rows are the highest-priority findings in any real audit.
 
-**All Inactive-column "yes" entries require `-IncludeNewlyCreated`** — every seeded
-account has `whenCreated = today` and would otherwise be excluded by the too-young
-filter (see calibration note and Scenario 7).
+**The Inactive column has lost its discriminating power in this lab.** Every enabled
+account has `whenCreated = today` AND `lastLogonTimestamp = null` (see calibration
+note), so `Get-InactiveUsers.ps1 -IncludeNewlyCreated` returns all 28 enabled
+accounts. The column is marked "yes" for every enabled seeded account below, kept for
+completeness. In an audit report of the lab this signal would be **discounted, not
+consumed** — the priority list is derived from the intersection with `Privileged` and
+`PNE` (see the join query below), and the `Inactive` column is treated as noise for
+this dataset.
 
 | Persona            | Inactive | Privileged | PNE | Notes |
 |--------------------|:--------:|:----------:|:---:|---|
-| `svc-legacy`       | yes      | yes        | yes | Worst case — all 3 reports (see Scenario 4) |
-| `sysadmin-legacy`  | yes      | yes        | yes | Triple finding (see Scenario 2) |
-| `svc-backup`       | —        | yes        | yes | Kerberoasting archetype (SPN pending — see Scenario 3) |
+| `svc-legacy`       | yes      | yes        | yes | Worst case — surfaces in all 3 reports (see Scenario 4) |
+| `sysadmin-legacy`  | yes      | yes        | yes | Backup Op + PNE + never-authenticated (see Scenario 2) |
+| `svc-backup`       | yes      | yes        | yes | Kerberoasting archetype; SPN pending (see Scenario 3). Now 3-way because Inactive is uniform |
+| `svc-sql`          | yes      | yes        | yes | Backup Op + PNE. Now 3-way for the same reason |
 | `mlefevre`         | yes      | yes        | —   | Stale DA (never-authenticated) |
-| `svc-sql`          | —        | yes        | yes | Backup Op + PNE |
-| `ccfo`             | yes      | —          | yes | Stale exec + PNE |
-| `alopez`           | yes      | —          | yes | Stale HR + PNE |
-| `aceo`             | —        | yes        | —   | Excessive operator |
-| `jadams`           | —        | yes        | —   | Active DA (baseline good) |
-| `rmills`           | —        | —          | yes | Standalone PNE |
-| `pkim`             | —        | —          | yes | Standalone PNE |
-| `svc-monitor`      | —        | —          | yes | Service PNE (not privileged) |
+| `ccfo`             | yes      | —          | yes | Exec + PNE |
+| `alopez`           | yes      | —          | yes | HR + PNE |
+| `aceo`             | yes      | yes        | —   | Excessive operator (Account Operators) |
+| `jadams`           | yes      | yes        | —   | Active DA — but observable is still "never authenticated" in the lab |
+| `rmills`           | yes      | —          | yes | Standalone PNE |
+| `pkim`             | yes      | —          | yes | Standalone PNE |
+| `svc-monitor`      | yes      | —          | yes | Service PNE (not privileged) |
 | `cstein`           | yes      | —          | —   | Provisioning ghost (never authenticated) |
 | `jthomas`          | yes      | —          | —   | Provisioning ghost |
 | `svc-print`        | yes      | —          | —   | Provisioning ghost (service) |
 | `ldubois`\*        | yes      | —          | —   | Too-young filter validation |
-| `jsmith`/`rpark`/`wlegacy` | — | —      | —   | Disabled — must NOT surface |
+| `ptaylor`          | yes      | —          | —   | Must-change-at-next-logon — appears alongside the others because Inactive discriminates nothing |
+| `akovach`, `mbianchi`, `ksimon`, `ewright`, `dweber`, `gnakamura`, `msanchez`, `tbrown`, `hwhite`, `bcoo`, `dvp` | yes | — | — | Baseline users — surface in Inactive only because the column is non-discriminating in this lab |
+| `jsmith`/`rpark`/`wlegacy` | — | —      | —   | Disabled — must NOT surface in any default-mode report |
 
 \* `ldubois` is functionally indistinguishable from `cstein` in observable state
 (both never authenticated, both created today) — the distinction lives in the account
@@ -596,31 +621,38 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
 .\scripts\powershell\Get-PasswordNeverExpires.ps1 -OutputPath .\outputs\pne.csv
 ```
 
-### Expected counts (lab baseline)
+### Expected counts (lab baseline — measured on the 27 August run)
 
 | Report                          | Expected rows | Notes |
-|---------------------------------|---------------|---|
-| `inactive.csv` (with switch)    | 9             | 5 InactiveDays intent + 4 NeverLoggedIn — all observably `LastLogon = Never` (see calibration note) |
+|---------------------------------|:-------------:|---|
+| `inactive.csv` (with switch)    | **28**        | All enabled seeded users (31 − 3 disabled). `Get-InactiveUsers.ps1` cannot distinguish them because `whenCreated = today` and `lastLogonTimestamp = null` on every account. See the "criterion that matches 100%" note above — read this column as noise, not signal, in the lab dataset. |
 | `inactive.csv` (without switch) | 0             | All seeded users excluded as too-young — validates the filter |
-| `privileged.csv`                | ~10           | Direct + Nested across DA / Backup Op / Account Op. Cross-check with `Step 10 — Force SDProp` in [lab-setup.md](lab-setup.md); adminCount is `$null` on fresh DA members until SDProp propagates |
+| `privileged.csv`                | **≈ 16**      | Direct + Nested walk across DA, Backup Ops, Account Ops, plus the built-in `Administrator` user appearing across DA / Enterprise Admins / Schema Admins / Administrators. Cross-check with `Step 10 — Force SDProp` in [lab-setup.md](lab-setup.md); `adminCount` is `$null` on fresh DA members until SDProp propagates. |
 | `pne.csv`                       | 9             | Excludes disabled, excludes managed service accounts (none seeded) |
 
 ### Validation checks to perform
 
-1. **Top of `pne.csv`**: any of the four privileged PNE accounts
-   (`svc-backup`, `svc-legacy`, `svc-sql`, `sysadmin-legacy`). PasswordAge is uniform
-   in the lab (see calibration note), so the tiebreaker falls to SamAccountName
-   ascending — expect `svc-backup` first, then `svc-legacy`, `svc-sql`,
-   `sysadmin-legacy`. Below the privileged tier: `alopez`, `ccfo`, `pkim`, `rmills`,
+1. **Top of `pne.csv`**: the four privileged PNE accounts must appear first
+   (`AdminCount = 1` sort priority). `PasswordAge` is uniform in the lab (see
+   calibration note) so the tiebreaker falls to `SamAccountName` ascending — expect
+   `svc-backup`, then `svc-legacy`, `svc-sql`, `sysadmin-legacy`. Below the
+   privileged tier (`AdminCount = null`): `alopez`, `ccfo`, `pkim`, `rmills`,
    `svc-monitor`.
-2. **Top of `inactive.csv`**: privileged never-authenticated accounts first —
-   `mlefevre`, `svc-legacy`, `sysadmin-legacy` (in SamAccountName order since the
-   `LastLogon = Never` tiebreaker leaves them equal). Below: `alopez`, `ccfo`,
-   `cstein`, `jthomas`, `ldubois`, `svc-print`. Total 9 rows.
-3. **`privileged.csv`** should contain rows for `jadams`, `mlefevre`, `svc-backup`,
-   `svc-legacy` all tagged `Direct, Domain Admins`. `svc-sql` should appear
-   `Direct, Backup Operators` and `Nested, Backup Operators` (the latter collapses
-   to Direct under the script's dedup).
+2. **Top of `inactive.csv`**: the privileged accounts must appear first
+   (`AdminCount = 1` tier), then the rest of the enabled surface. Since `LastLogon`
+   is `Never` on every row the ordering within each tier is by `SamAccountName`.
+   Expect the privileged tier to contain `jadams`, `mlefevre`, `svc-backup`,
+   `svc-legacy`, `svc-sql`, `sysadmin-legacy`, `aceo` (once SDProp has propagated),
+   followed by the non-privileged enabled accounts alphabetically. Total 28 rows —
+   see the calibration note before treating this as a finding.
+3. **`privileged.csv`** should contain (at minimum) rows for `jadams`, `mlefevre`,
+   `svc-backup`, `svc-legacy` all tagged `Direct, Domain Admins`, and each of them
+   again as `Nested, Administrators` (via the default nesting of Domain Admins in
+   the Built-in `Administrators` group). `svc-sql` should appear
+   `Direct, Backup Operators` (dedup collapses the `Nested` via
+   `GG-Backup-Operators-Team` to the Direct row). The built-in `Administrator` user
+   appears across `Domain Admins`, `Enterprise Admins`, `Schema Admins`, and
+   `Administrators`. Total ≈ 16 rows.
 4. **None of the disabled users** (`jsmith`, `rpark`, `wlegacy`) should appear in any
    default-mode report.
 
@@ -631,12 +663,21 @@ $inactive   = Import-Csv .\outputs\inactive.csv
 $privileged = Import-Csv .\outputs\privileged.csv
 $pne        = Import-Csv .\outputs\pne.csv
 
-# Principals appearing in all three reports — the highest-priority findings
+# Principals appearing in all three reports — nominally the highest-priority findings
 $inactive |
     Where-Object { $privileged.SamAccountName -contains $_.SamAccountName } |
     Where-Object { $pne.SamAccountName        -contains $_.SamAccountName } |
     Select-Object SamAccountName, DisplayName, LastLogon, AdminCount
 ```
 
-In the lab this query returns `svc-legacy` and `sysadmin-legacy`. In a real audit, the
-output of this join is the executive-summary-page-one of the report.
+In the lab this query returns **four rows**: `svc-backup`, `svc-legacy`, `svc-sql`,
+`sysadmin-legacy` — the intersection of "privileged" and "PNE", since the "inactive"
+predicate matches everything and does not narrow the set. The intended
+executive-page-one framing (a single "worst case" bubbling to the top) is therefore
+recovered by **either** dropping the `$inactive` clause (join becomes
+`privileged ∩ pne`, same four rows) **or** filtering the join on
+`AdminCount = 1` and `LastLogon = Never` together, which yields the same list in this
+lab.
+
+In a real audit where inactivity does discriminate, the join would collapse further —
+often to a single line, which is the finding you build the executive summary around.
