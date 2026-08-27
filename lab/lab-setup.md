@@ -392,11 +392,19 @@ mkdir C:\iam-toolkit\outputs -Force
 .\scripts\powershell\Get-PrivilegedUsers.ps1      -OutputPath .\outputs\privileged.csv
 .\scripts\powershell\Get-PasswordNeverExpires.ps1 -OutputPath .\outputs\pne.csv
 
-# Sanity checks
-(Import-Csv .\outputs\inactive.csv).Count         # expect ~10
-(Import-Csv .\outputs\privileged.csv).Count       # expect ~10
+# Sanity checks (measured against the 27 August lab run)
+(Import-Csv .\outputs\inactive.csv).Count         # expect 28 — every enabled account. See NOTE below.
+(Import-Csv .\outputs\privileged.csv).Count       # expect ~16
 (Import-Csv .\outputs\pne.csv).Count              # expect 9
 ```
+
+**NOTE on `inactive.csv = 28`.** Because `lastLogonTimestamp` cannot be backdated via
+LDAP (it is owned by the SAM) and every seeded account has `whenCreated = today`, the
+inactivity column matches the entire enabled surface in the lab. This is a symptom of
+a non-discriminating criterion, not of a dormant estate — see the calibration note in
+[lab-scenarios.md](lab-scenarios.md#a-criterion-that-matches-100-of-the-perimeter-is-not-a-criterion)
+for the full explanation. In a real audit an inactivity column that returns 100% of
+the perimeter tells you to switch to authentication logs, not to disable everyone.
 
 Verify the cross-vector join (the top-of-report findings):
 
@@ -411,8 +419,10 @@ $inactive |
     Select-Object SamAccountName, DisplayName, LastLogon, AdminCount
 ```
 
-Expected output: two rows, `svc-legacy` and `sysadmin-legacy`. If you see those two,
-the entire toolchain is wired correctly.
+Expected output: **four rows**, `svc-backup`, `svc-legacy`, `svc-sql`,
+`sysadmin-legacy`. Because the `Inactive` predicate matches the whole enabled surface,
+this join reduces to `Privileged ∩ PNE`. If you see those four, the entire toolchain
+is wired correctly.
 
 ---
 
