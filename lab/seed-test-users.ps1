@@ -276,6 +276,12 @@ function New-LabUser {
         }
 
         if ($updateParams.Count -gt 0) {
+            # Diagnostic trace: on a re-run against unchanged state this should print
+            # for ptaylor only (ChangePasswordAtLogon is re-applied by design). Any
+            # other account appearing here means a comparison is misfiring - the
+            # printed uac / current / desired triplet says which one.
+            Write-Verbose ("Updating '{0}': uac=0x{1:X} enabled {2}->{3} pne {4}->{5} fields=[{6}]" -f `
+                $Sam, $uac, $currentEnabled, (-not $Disabled), $currentPNE, $PNE, ($updateParams.Keys -join ','))
             try {
                 Set-ADUser -Identity $existing @updateParams -ErrorAction Stop
                 $script:summary.UsersUpdated++
