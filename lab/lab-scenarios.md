@@ -505,26 +505,38 @@ business reason if `PNE` is genuinely required (rare).
 
 **Configuration in the lab**:
 - `Enabled = false`
-- Variously inactive, with one (`wlegacy`) flagged as a former DA member
+- `wlegacy` is a former Domain Admins member **whose `PasswordNeverExpires` flag was
+  never removed at off-boarding** — the account was disabled and its group membership
+  stripped, but the UAC bit survived the process.
 
 **Real-world context**: former employees, properly off-boarded. Kept disabled for audit
-trail or for the retention period mandated by HR/legal.
+trail or for the retention period mandated by HR/legal. The `wlegacy` variant is the
+common incomplete off-boarding: the ticket checklist covers "disable" and "remove from
+groups" but not "reset the account flags", so the PNE bit persists indefinitely on a
+dormant object.
 
-**Threat model**: none for active exploitation (disabled accounts cannot authenticate).
-The hygiene question is whether they should be deleted or moved to a dedicated
-deletion-pending OU after the retention period — but that is a policy question, not a
-detection-script question.
+**Threat model**: none for active exploitation while the account stays disabled —
+disabled accounts cannot authenticate. The risk is **re-enablement**: if the account is
+ever reactivated (helpdesk mistake, a "we need this back for the audit" request, an
+attacker with Account Operators rights), it comes back with a non-expiring password
+that nobody has rotated since the employee left. The hygiene question — delete, or move
+to a deletion-pending OU after retention — is a policy call, not a detection-script one.
 
-**Detection** (negative test — should NOT surface in default-mode reports):
-- `Get-InactiveUsers.ps1` → excluded by the `Enabled = true` filter.
+**Detection**:
+- `Get-InactiveUsers.ps1` → excluded by the `Enabled = true` filter (negative test —
+  correct behaviour).
 - `Get-PrivilegedUsers.ps1` → `wlegacy` is no longer in any privileged group (the lab
   simulates an off-boarding where group membership was removed before disabling), so
-  does not appear.
-- `Get-PasswordNeverExpires.ps1` → excluded by default; surfaces only with
-  `-IncludeDisabled`.
+  does not appear. Negative test — correct behaviour.
+- `Get-PasswordNeverExpires.ps1` → excluded by default. **With `-IncludeDisabled`,
+  `wlegacy` surfaces**, alongside the built-in `Guest` account (also disabled and
+  PNE-flagged by default in a fresh domain). This is the positive test that makes
+  `-IncludeDisabled` demonstrable in the lab rather than merely executable.
 
-The default behaviour is correct; the auditor's report does not waste lines on accounts
-that cannot authenticate.
+The default behaviour is correct: the auditor's report does not waste lines on accounts
+that cannot authenticate. The `-IncludeDisabled` pass is the deliberate second look —
+run it when the engagement scope includes off-boarding-process review, which is exactly
+where `wlegacy` is the finding.
 
 ---
 
@@ -549,14 +561,23 @@ because:
    suggests the password reset was never used → unused account.
 
 **Detection**:
-- `Get-PasswordNeverExpires.ps1` → for `ptaylor`, this script returns no row (`PNE` is
-  not set). If `PNE` were also set, the row would appear with `PasswordAge = null`
-  (sort priority below known ages) and `PasswordLastSet = null`.
+- `Get-PasswordNeverExpires.ps1` → for `ptaylor`, this script returns **no row**: the
+  `ChangePasswordAtLogon` flag alone does not put an account in this report, only the
+  `DONT_EXPIRE_PASSWORD` UAC bit does, and `ptaylor` does not carry it. `ptaylor` is
+  therefore the *mechanism* reference for `pwdLastSet = 0`, not an occurrence in the
+  output.
+- The `PasswordAge = null` sort branch **is** exercised in the lab — by the built-in
+  **`Guest`** account when `-IncludeDisabled` is passed. `Guest` is disabled, carries
+  `PasswordNeverExpires`, and has `pwdLastSet = 0` (no password ever set), so its row
+  comes back with both `PasswordLastSet` and `PasswordAge` empty and sorts below every
+  row with a known age. Confirmed on the 10-Sep-2026 test session.
 
-In the lab, `ptaylor` is the documented expected-null case for the sort logic; the
-`PasswordAge = null` branch of `Get-PasswordNeverExpires.ps1` is exercised by any user
-who has been seeded with `ChangePasswordAtLogon` and `PasswordNeverExpires` together
-(none in the current seed — left as a possible extension).
+**Reading an empty `PasswordLastSet` / `PasswordAge` pair**: this is not missing data
+or a script error. It is the signal that `pwdLastSet = 0` on the object — the account
+is awaiting its first authenticated logon and no password has been chosen yet. An
+auditor who dismisses the empty cells as a tooling glitch loses the finding. See the
+`.NOTES` of `Get-PasswordNeverExpires.ps1` for the audit-side interpretation when the
+empty pair is combined with `PasswordNeverExpires = true`.
 
 **Remediation**: no action unless `pwdLastSet = 0` persists for an extended period, in
 which case treat as a never-used-after-reset finding.
@@ -597,7 +618,12 @@ this dataset.
 | `ldubois`\*        | yes      | —          | —   | Too-young filter validation |
 | `ptaylor`          | yes      | —          | —   | Must-change-at-next-logon — appears alongside the others because Inactive discriminates nothing |
 | `akovach`, `mbianchi`, `ksimon`, `ewright`, `dweber`, `gnakamura`, `msanchez`, `tbrown`, `hwhite`, `bcoo`, `dvp` | yes | — | — | Baseline users — surface in Inactive only because the column is non-discriminating in this lab |
-| `jsmith`/`rpark`/`wlegacy` | — | —      | —   | Disabled — must NOT surface in any default-mode report |
+| `jsmith`/`rpark`/`wlegacy` | — | —      | —\* | Disabled — must NOT surface in any default-mode report |
+
+\* `wlegacy` carries `PasswordNeverExpires` (former DA member, flag never removed at
+off-boarding). It stays out of the default `pne.csv` because the LDAP filter excludes
+disabled accounts, and surfaces only under `Get-PasswordNeverExpires.ps1
+-IncludeDisabled`. See Scenario 13.
 
 \* `ldubois` is functionally indistinguishable from `cstein` in observable state
 (both never authenticated, both created today) — the distinction lives in the account
@@ -629,6 +655,7 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
 | `inactive.csv` (without switch) | 0             | All seeded users excluded as too-young — validates the filter |
 | `privileged.csv`                | **≈ 16**      | Direct + Nested walk across DA, Backup Ops, Account Ops, plus the built-in `Administrator` user appearing across DA / Enterprise Admins / Schema Admins / Administrators. Cross-check with `Step 10 — Force SDProp` in [lab-setup.md](lab-setup.md); `adminCount` is `$null` on fresh DA members until SDProp propagates. |
 | `pne.csv`                       | 9             | Excludes disabled, excludes managed service accounts (none seeded) |
+| `pne.csv` (`-IncludeDisabled`)  | 11+           | The 9 above, plus `wlegacy` (seeded disabled former DA with the PNE flag left behind) and the built-in `Guest` (disabled, PNE, `pwdLastSet = 0` so it lands at the bottom of the sort with empty PasswordLastSet / PasswordAge). `krbtgt` may also appear depending on domain configuration. |
 
 ### Validation checks to perform
 
@@ -655,6 +682,12 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
    `Administrators`. Total ≈ 16 rows.
 4. **None of the disabled users** (`jsmith`, `rpark`, `wlegacy`) should appear in any
    default-mode report.
+5. **`-IncludeDisabled` positive test**: rerun
+   `Get-PasswordNeverExpires.ps1 -IncludeDisabled` and confirm that `wlegacy` now
+   appears (seeded disabled former DA whose PNE flag survived off-boarding) along with
+   the built-in `Guest`. `Guest` must land at the bottom of the sort with both
+   `PasswordLastSet` and `PasswordAge` empty — that empty pair is the `pwdLastSet = 0`
+   signal, not missing data (Scenario 14).
 
 ### Cross-vector join
 
