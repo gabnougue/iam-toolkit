@@ -220,7 +220,14 @@ function New-LabUser {
     )
 
     $ouDN = "OU=$OU,$script:DomainDN"
-    $existing = Get-ADUser -Filter "SamAccountName -eq `"$Sam`"" -Properties Description, PasswordNeverExpires, Enabled -ErrorAction SilentlyContinue
+    # userAccountControl is fetched so we can derive Enabled and PasswordNeverExpires
+    # directly from its bits. The friendly .Enabled / .PasswordNeverExpires properties
+    # were not reliably comparable across seed re-runs (10-Sep-2026 observation:
+    # 9 spurious "updated" events per re-run, exactly matching the count of PNE=$true
+    # accounts, because $existing.PasswordNeverExpires read as unequal to $PNE even
+    # when the account was already correctly configured). Deriving from UAC bypasses
+    # that friendly-property quirk entirely.
+    $existing = Get-ADUser -Filter "SamAccountName -eq `"$Sam`"" -Properties Description, userAccountControl -ErrorAction SilentlyContinue
 
     if (-not $existing) {
         $securePwd = ConvertTo-SecureString $DefaultPassword -AsPlainText -Force
@@ -251,11 +258,17 @@ function New-LabUser {
         }
     }
     else {
-        # Idempotent update: align only the attributes we care about
+        # Idempotent update: align only the attributes we care about.
+        # Enabled and PasswordNeverExpires are derived from the UAC bits directly
+        # (see the fetch comment above).
+        $uac            = [int]$existing.userAccountControl
+        $currentEnabled = -not (($uac -band 0x2)     -ne 0)   # 0x2     = ACCOUNTDISABLE
+        $currentPNE     =        ($uac -band 0x10000) -ne 0   # 0x10000 = DONT_EXPIRE_PASSWORD
+
         $updateParams = @{}
-        if ($existing.Description -ne $Description)         { $updateParams.Description           = $Description }
-        if ($existing.Enabled     -eq $Disabled)            { $updateParams.Enabled               = (-not $Disabled) }
-        if ($existing.PasswordNeverExpires -ne $PNE)        { $updateParams.PasswordNeverExpires  = $PNE }
+        if ($existing.Description -ne $Description)     { $updateParams.Description          = $Description }
+        if ($currentEnabled       -ne (-not $Disabled)) { $updateParams.Enabled              = (-not $Disabled) }
+        if ($currentPNE           -ne $PNE)             { $updateParams.PasswordNeverExpires = $PNE }
         if ($ChangePasswordAtLogon) {
             # ChangePasswordAtLogon is not directly readable as a friendly property; always re-apply when requested
             $updateParams.ChangePasswordAtLogon = $true
