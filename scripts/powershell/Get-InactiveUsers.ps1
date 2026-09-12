@@ -87,6 +87,16 @@
       the *remaining* DCs. Net result: one listing query + (N-1) lightweight `lastLogon`
       queries, never N+1.
 
+    AccurateMode single-DC caveat:
+      Get-ADDomainController -Filter * returns a bare object (not an array) when the
+      domain has exactly one DC. The script wraps the call with @(...) so that
+      $dcs[0] resolves through positional indexing, not through the AD object's
+      property indexer (which would return an empty ADPropertyValueCollection and
+      silently poison -Server downstream). This bug is invisible in any realistic
+      production environment (2+ DCs) and only surfaces in single-DC lab / test
+      setups. It is an argument for validating the toolkit against a minimal lab
+      in addition to a realistic one.
+
     SearchBase scoping:
       Applied only to the user query. The gMSA/sMSA query runs domain-wide because
       managed service accounts are not located under organizational OUs. Documenting
@@ -163,12 +173,18 @@ $dcs = $null
 $listingDc = $null
 if ($AccurateMode) {
     try {
-        $dcs = Get-ADDomainController -Filter * -ErrorAction Stop
+        # `@(...)` wrap is critical: on a single-DC domain, Get-ADDomainController -Filter *
+        # returns a bare ADDomainController object rather than an array. In that state,
+        # $dcs[0] silently goes through the object's property indexer (which indexes by
+        # property NAME) and yields an empty ADPropertyValueCollection - non-null but
+        # empty, so $null checks pass, and downstream -Server receives an empty string.
+        # Observed 10-Sep-2026 on the mono-DC lab; not reproducible with 2+ DCs.
+        $dcs = @(Get-ADDomainController -Filter * -ErrorAction Stop)
     }
     catch {
         throw "Failed to enumerate domain controllers for -AccurateMode: $($_.Exception.Message)"
     }
-    if (-not $dcs) {
+    if ($dcs.Count -eq 0) {
         throw "No domain controllers returned for -AccurateMode."
     }
 
