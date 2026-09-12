@@ -48,13 +48,14 @@
       Never-authenticated (visible with Get-InactiveUsers -IncludeNewlyCreated) : 9 enabled
         - 5 carry InactiveDays intent  : mlefevre, sysadmin-legacy, alopez, ccfo, svc-legacy
         - 4 carry NeverLoggedIn intent : cstein, ldubois, jthomas, svc-print
-      Privileged (direct DA membership)         : 4  (spec: 3+)
-      Privileged (other sensitive groups)       : 3
-      PasswordNeverExpires set                  : 9  (spec: 5+)
-      Service account with DA                   : 2  (spec: 1+)
-      Empty/orphan groups                       : 2  (spec: 2+)
-      Nested group memberships (privilege)      : 2 chains
-      Must-change-at-next-logon                 : 1  (edge-case finding)
+      Privileged (direct DA membership)          : 4  (spec: 3+)
+      Privileged (other sensitive groups)        : 3
+      PasswordNeverExpires set (enabled)         : 9  (spec: 5+)
+      PasswordNeverExpires set (disabled, seen with -IncludeDisabled) : 1  (wlegacy)
+      Service account with DA                    : 2  (spec: 1+)
+      Empty/orphan groups                        : 2  (spec: 2+)
+      Nested group memberships (privilege)       : 2 chains
+      Must-change-at-next-logon                  : 1  (edge-case finding)
 
     Cross-vector findings (the gold for lab demos):
       svc-legacy        : DA + PNE + never authenticated since creation - nobody
@@ -376,7 +377,7 @@ $users = @(
     # Disabled Users (3) - should NOT appear in default-mode reports
     @{ Sam='jsmith';          Name='Jane Smith';         OU='Disabled Users'; Description="$marker Disabled, intent inactive 300d";                       Disabled=$true; InactiveDays=300 }
     @{ Sam='rpark';           Name='Ryan Park';          OU='Disabled Users'; Description="$marker Disabled, normal";                             Disabled=$true }
-    @{ Sam='wlegacy';         Name='Walter Legacy';      OU='Disabled Users'; Description="$marker Disabled former DA member";                    Disabled=$true; InactiveDays=500 }
+    @{ Sam='wlegacy';         Name='Walter Legacy';      OU='Disabled Users'; Description="$marker Disabled former DA member - PNE flag never removed at off-boarding (surfaces in Get-PasswordNeverExpires -IncludeDisabled)"; Disabled=$true; PNE=$true; InactiveDays=500 }
 )
 
 foreach ($u in $users) {
