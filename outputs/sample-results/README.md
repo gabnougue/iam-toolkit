@@ -7,7 +7,7 @@ across 6 OUs with deliberate IAM misconfigurations. See
 [`lab/lab-scenarios.md`](../../lab/lab-scenarios.md) for the full catalogue of seeded
 misconfigurations and the threat model behind each one.
 
-Generated on 2026-08-27 against a single-DC Windows Server 2022 forest,
+Generated on 2026-09-12 against a single-DC Windows Server 2022 forest,
 domain functional level 2016.
 
 | File | Script | Rows |

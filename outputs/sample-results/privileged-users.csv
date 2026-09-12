@@ -15,4 +15,3 @@
 "labadmin",,"Enterprise Admins","Direct","user","True","1","CN=labadmin,CN=Users,DC=lab,DC=local"
 "labadmin",,"Group Policy Creator Owners","Direct","user","True","1","CN=labadmin,CN=Users,DC=lab,DC=local"
 "labadmin",,"Schema Admins","Direct","user","True","1","CN=labadmin,CN=Users,DC=lab,DC=local"
-
