@@ -107,6 +107,24 @@
       "must change at next logon" - a distinct finding), then PasswordAge descending
       (oldest passwords first), then SamAccountName.
 
+    Empty PasswordLastSet / null PasswordAge in the output:
+      When pwdLastSet = 0 on the account, BOTH the PasswordLastSet column (formatted
+      to $null in the CSV) and the PasswordAge column (integer null) come back empty
+      in the same row. This is NOT missing data - it is the observable signal that
+      the account is awaiting its first authenticated logon and no password has yet
+      been chosen by the user. An auditor who treats the empty pair as an error
+      would misread the row. Observed in the lab on:
+        - ptaylor: seeded with ChangePasswordAtLogon (does NOT carry PNE, so it
+                   does not surface in this report - listed here as the mechanism
+                   reference).
+        - Guest:   built-in, disabled, PNE, pwdLastSet=0 by default. Surfaces with
+                   -IncludeDisabled and exercises the null-PasswordAge sort branch.
+      For a real audit, an account with empty PasswordLastSet AND
+      PasswordNeverExpires = true is a mid-severity finding: someone provisioned an
+      account with a bypass flag and the initial password was never used - either
+      the account is genuinely pending onboarding, or it was created for a purpose
+      nobody remembers. Cross-check with the account's Description and creator.
+
     Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and read access
     to the directory.
 #>
