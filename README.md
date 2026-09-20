@@ -25,6 +25,10 @@ The methodology behind it is documented in
 cross-referenced, how severity is decided, and why tooling has to be validated
 against a real directory before its output is trusted.
 
+The sample report and the methodology are in French, the delivery language of an
+audit conducted in France. The tooling, the lab guides and this README are in
+English.
+
 ## What it detects
 
 | Script | What it finds |
@@ -122,4 +126,4 @@ Gabin Nougué — IAM apprentice at Bordeaux Métropole, working on identity
 governance in a public-sector Active Directory environment. Microsoft Certified:
 Identity and Access Administrator Associate (SC-300).
 
-[GitHub](https://github.com/gabnougue) · [LinkedIn](https://www.linkedin.com/in/gabin-nougue/)
+[GitHub](https://github.com/gabnougue) · [LinkedIn](https://www.linkedin.com/in/gabin-nougu%C3%A9-41703b276/)
