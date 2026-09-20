@@ -115,3 +115,11 @@ MIT — see [LICENSE](LICENSE).
 
 Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md)
 before submitting changes.
+
+## Author
+
+Gabin Nougué — IAM apprentice at Bordeaux Métropole, working on identity
+governance in a public-sector Active Directory environment. Microsoft Certified:
+Identity and Access Administrator Associate (SC-300).
+
+[GitHub](https://github.com/gabnougue) · [LinkedIn](https://www.linkedin.com/in/gabin-nougue/)
