@@ -184,7 +184,10 @@
          membership in favour of narrowly delegated rights.
 
     Validation status - written blind, NOT yet run against a real directory:
-      Lab status at time of writing: <TO CONFIRM BY AUTHOR>. This script was
+      The original lab.local VM no longer exists: the free Azure credit expired on
+      13 September 2026 and the VM was deleted afterwards. The lab is to be
+      rebuilt on an Azure for Students subscription, from the repo's lab
+      procedure (lab/lab-setup.md), before the first run. This script was
       written in November 2026 with no DC available. Every line tagged
       VERIFY-ON-FIRST-RUN in the code must be checked on the first run (grep for
       the tag). In particular:
