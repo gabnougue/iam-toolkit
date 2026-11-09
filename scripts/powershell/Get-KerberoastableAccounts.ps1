@@ -122,9 +122,12 @@
       EncryptionType values (fixed strings):
         AES            - only AES bits set. The KDC encrypts the ticket with AES.
         RC4            - RC4 set, no AES.
-        RC4+AES        - both set. Treated as RC4-exposed: an attacker can list
-                         only RC4 in the ticket request, and the KDC honours it
-                         because the account declares RC4 support.
+        RC4+AES        - both set. The account keeps an RC4 key and declares RC4
+                         as accepted, so it is graded as RC4-exposed - a
+                         conservative classification. Whether the KDC actually
+                         issues an RC4 ticket for a 0x1C account when the client
+                         requests RC4 only is NOT confirmed; it must be tested in
+                         the lab (see Validation status, point 5).
         DES / DES+...  - legacy DES bits present. Treated as RC4-exposed (worse).
         NotConfigured  - attribute absent or no cipher bit set. See below.
 
@@ -147,11 +150,20 @@
       of msDS-SupportedEncryptionTypes. A very old PasswordAge on an AES row is the
       cue: reset the password and the AES keys are generated.
 
-    Privilege is read from adminCount:
-      adminCount is set by SDProp, which runs every 60 minutes of PDC uptime. A
-      principal added to a protected group very recently can still read
-      AdminCount = null and be graded one tier too low. Cross-check with
-      Get-PrivilegedUsers.ps1, whose membership walk is authoritative.
+    Privilege is read from adminCount - it can be wrong in both directions:
+      Under-grading: adminCount is set by SDProp, which runs every 60 minutes of
+      PDC uptime. A principal added to a protected group very recently can still
+      read AdminCount = null and be graded one tier too low.
+      Over-grading: SDProp never clears adminCount. An account removed from a
+      protected group keeps adminCount = 1 indefinitely (orphaned adminCount,
+      common in production) and surfaces as Critical / High although it no longer
+      holds that privilege.
+      Scope limit: adminCount only reflects membership of the AdminSDHolder
+      protected groups. An account privileged by other means - local admin on
+      servers, DCSync rights granted through ACLs, delegated rights on OUs - reads
+      as non-privileged and is graded Medium / Low.
+      Cross-check with Get-PrivilegedUsers.ps1, whose membership walk is
+      authoritative for protected-group membership.
 
     Exclusions:
       - Computer objects (objectCategory = computer): out of scope, see DESCRIPTION.
@@ -172,9 +184,10 @@
          membership in favour of narrowly delegated rights.
 
     Validation status - written blind, NOT yet run against a real directory:
-      The Azure lab was torn down on 13 September 2026; this script was written in
-      November 2026 with no DC available. Every line tagged VERIFY-ON-FIRST-RUN in
-      the code must be checked on the first run (grep for the tag). In particular:
+      Lab status at time of writing: <TO CONFIRM BY AUTHOR>. This script was
+      written in November 2026 with no DC available. Every line tagged
+      VERIFY-ON-FIRST-RUN in the code must be checked on the first run (grep for
+      the tag). In particular:
         1. msDS-SupportedEncryptionTypes retrieval and decoding - the most likely
            point of failure (hyphenated LDAP name as a property, null vs 0, value
            type returned by the AD module).
@@ -184,6 +197,10 @@
         4. Against the current seed this script returns zero rows: svc-backup has
            no SPN yet. The seed extension adds it - until then, set an SPN by hand
            on a lab account to exercise the code path.
+        5. RC4+AES grading: set msDS-SupportedEncryptionTypes = 0x1C on a test
+           account, request its ticket with impacket GetUserSPNs.py, and read the
+           hash prefix ($krb5tgs$23$ = RC4, $krb5tgs$18$ = AES256) to confirm or
+           refute that a 0x1C account can still yield an RC4 ticket.
 
     Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and read
     access to the directory. No privilege beyond an ordinary domain account is
