@@ -5,14 +5,14 @@ This document catalogues every IAM misconfiguration intentionally introduced by
 context, the threat model, which detection script surfaces it, and the expected
 remediation.
 
-The lab is designed so that **the same principal often appears in two or three reports**.
+The lab is designed so that **the same principal often appears in two, three or even all four reports**.
 Those cross-vector findings are the highest-priority items in any real audit — they tell
 you that multiple controls failed on the same identity.
 
 ## How to use this document
 
 1. Run `seed-test-users.ps1` against your `lab.local` domain.
-2. Run the three detection scripts (see the validation walkthrough at the bottom).
+2. Run the four detection scripts (see the validation walkthrough at the bottom).
 3. Open each CSV alongside the relevant scenario section here to interpret the findings.
 4. For client-facing work: this catalogue is the source material for explaining "what we
    look for and why" in scoping conversations.
@@ -227,12 +227,15 @@ had already granted DA and PNE for "we need it before Friday" reasons.
 - Provisioning-time credential exposure: whoever set the initial password (helpdesk
   template? ticket attachment? Slack DM?) still knows it, and it has never rotated.
 
-**Detection**: **all three scripts**.
+**Detection**: **three of the four reports** — inactive, privileged and PNE. It does not
+appear in the Kerberoasting report: `svc-legacy` carries no SPN (see Scenario 3 for the
+privileged account that does).
 - `Get-PrivilegedUsers.ps1` → `Direct, Domain Admins, AdminCount=1`
 - `Get-InactiveUsers.ps1 -IncludeNewlyCreated` → top of report, `LastLogon = Never`
 - `Get-PasswordNeverExpires.ps1` → top of privileged tier, `PasswordAge = ~0`
 
-The intersection of all three CSVs (join on SamAccountName) is the audit's
+The intersection of the three account-hygiene CSVs (inactive, privileged, PNE), joined
+on SamAccountName, is the audit's
 highest-severity findings list. This persona is the worked example for that join.
 
 **Remediation**: disable immediately. Investigate why it remained enabled — the gap in
@@ -771,7 +774,8 @@ $inactive   = Import-Csv .\outputs\inactive.csv
 $privileged = Import-Csv .\outputs\privileged.csv
 $pne        = Import-Csv .\outputs\pne.csv
 
-# Principals appearing in all three reports — nominally the highest-priority findings
+# Principals appearing in the three account-hygiene reports (inactive, privileged, PNE)
+# — nominally the highest-priority findings
 $inactive |
     Where-Object { $privileged.SamAccountName -contains $_.SamAccountName } |
     Where-Object { $pne.SamAccountName        -contains $_.SamAccountName } |
