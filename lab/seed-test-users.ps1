@@ -4,11 +4,17 @@
     groups, and OUs that exercise every detection vector of the IAM Toolkit scripts.
 
 .DESCRIPTION
-    Creates ~31 users distributed across realistic OUs (IT, HR, Finance, Management, Service
+    Creates ~35 users distributed across realistic OUs (IT, HR, Finance, Management, Service
     Accounts, Disabled Users) with deliberate IAM misconfigurations clustered to mirror
     patterns seen in production audits: stale privileged accounts, legacy service accounts
-    with DA + PNE, never-logged-in provisioning leftovers, empty/orphan groups, and a
-    too-young account that demonstrates the `Get-InactiveUsers.ps1` exclusion filter.
+    with DA + PNE, never-logged-in provisioning leftovers, empty/orphan groups, a
+    too-young account that demonstrates the `Get-InactiveUsers.ps1` exclusion filter,
+    and five service accounts carrying an SPN - one per branch of the encryption-type
+    decoding and severity grading in `Get-KerberoastableAccounts.ps1`.
+
+    The seed only writes attributes. It requests no Kerberos ticket and runs no
+    attack; it reproduces, in an isolated lab with synthetic data, the configurations
+    the read-only audit scripts are meant to detect.
 
     The script is idempotent: re-running it leaves the lab in the same final state and
     reports what was created vs. updated vs. left untouched.
@@ -48,6 +54,7 @@
       Never-authenticated (visible with Get-InactiveUsers -IncludeNewlyCreated) : 9 enabled
         - 5 carry InactiveDays intent  : mlefevre, sysadmin-legacy, alopez, ccfo, svc-legacy
         - 4 carry NeverLoggedIn intent : cstein, ldubois, jthomas, svc-print
+        (in practice every enabled seeded account is never-authenticated: 32 rows)
       Privileged (direct DA membership)          : 4  (spec: 3+)
       Privileged (other sensitive groups)        : 3
       PasswordNeverExpires set (enabled)         : 9  (spec: 5+)
@@ -56,13 +63,14 @@
       Empty/orphan groups                        : 2  (spec: 2+)
       Nested group memberships (privilege)       : 2 chains
       Must-change-at-next-logon                  : 1  (edge-case finding)
+      User accounts with an SPN (kerberoastable) : 5  (one per decoding branch)
 
     Cross-vector findings (the gold for lab demos):
       svc-legacy        : DA + PNE + never authenticated since creation - nobody
                           knows what it is for, nobody watches it, and it holds DA
       sysadmin-legacy   : BackupOp + PNE + never authenticated
-      svc-backup        : DA + PNE (Kerberoasting target - the SPN will be added
-                          when the seed is extended for Get-KerberosRisks.ps1)
+      svc-backup        : DA + PNE + SPN in RC4 - the Kerberoasting worst case
+                          (Critical in Get-KerberoastableAccounts.ps1)
       mlefevre          : DA + never authenticated (stale-privileged semantic)
       ldubois           : created today, never authenticated - demonstrates the
                           too-young filter of Get-InactiveUsers.ps1
@@ -88,6 +96,31 @@
           accounts never used since creation are themselves a finding at least as
           severe as "inactive for 400 days".
 
+    Kerberoastable service accounts (Get-KerberoastableAccounts.ps1 fixtures):
+      One account per branch of the encryption-type decoding and severity grading.
+      Expected output of the audit script after SDProp has propagated (5 rows):
+
+        Account      Groups          msDS-SupportedEncryptionTypes   Expected
+        -----------  --------------  ------------------------------  ------------------
+        svc-backup   Domain Admins   0x04 (RC4 only)                 Critical / RC4
+        svc-web      none            0x04 (RC4 only)                 Medium   / RC4
+        svc-mixed    none            0x1C (RC4 + AES128 + AES256)    Medium   / RC4+AES
+        svc-default  none            attribute absent                Medium   / NotConfigured
+        svc-modern   none            0x18 (AES128 + AES256)          Low      / AES
+
+      svc-mixed is the fixture for point 5 of the audit script's Validation status
+      (does a 0x1C account still yield an RC4 ticket?). svc-backup only reads
+      Critical once SDProp has set adminCount = 1 (lab-setup.md, Step 10).
+
+      How the SPN is set: by writing the servicePrincipalName attribute directly
+      (Set-ADUser -Replace), not with setspn.exe. Same LDAP write path as every
+      other attribute the seed manages, so the current value can be read back and
+      compared before writing (strict idempotency), and no extra binary is needed.
+      Domain controllers enforce SPN uniqueness on write (Windows Server 2012 R2 and
+      later), which is the protection setspn -S would otherwise add. Every SPN uses
+      a lab.local host name; the hosts do not need to exist - an SPN is a string
+      the KDC maps to an account, and nothing in the seed resolves it.
+
     Backdating that would work but is not attempted here:
       Manipulating the DC clock (Set-Date on the DC while stopped, or Azure VM
       snapshot / restore) can produce past PasswordLastSet values organically. That
@@ -100,6 +133,10 @@
                      ChangePasswordAtLogon differ.
       Groups:        queried by Name; created if absent.
       Memberships:   Get-ADGroupMember checked before Add-ADGroupMember.
+      SPN / enc.:    servicePrincipalName compared as a case-insensitive set, and
+                     msDS-SupportedEncryptionTypes compared as an integer with
+                     absent-vs-absent handled explicitly; written only on a real
+                     difference. A second run reports KerberosConfigUpdated = 0.
 
     Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and Domain
     Admin rights (to add members to protected groups; adminCount propagation depends
@@ -160,10 +197,22 @@ $summary = [PSCustomObject]@{
     GroupsExisting         = 0
     MembershipsAdded       = 0
     MembershipsExisting    = 0
+    KerberosConfigUpdated  = 0
+    KerberosConfigUnchanged = 0
     Warnings               = New-Object System.Collections.Generic.List[string]
 }
 
 $marker = '[SEEDED-LAB]'
+
+# msDS-SupportedEncryptionTypes cipher bits (MS-KILE 2.2.7) and the combinations
+# the Kerberoasting fixtures use. Same bit values as Get-KerberoastableAccounts.ps1.
+$ENCTYPE_RC4_HMAC  = 0x04
+$ENCTYPE_AES128    = 0x08
+$ENCTYPE_AES256    = 0x10
+$ENCTYPES_RC4_ONLY = $ENCTYPE_RC4_HMAC                                  # 0x04
+$ENCTYPES_AES_ONLY = $ENCTYPE_AES128 -bor $ENCTYPE_AES256               # 0x18
+$ENCTYPES_RC4_AES  = $ENCTYPE_RC4_HMAC -bor $ENCTYPES_AES_ONLY          # 0x1C
+$ENCTYPES_ATTR     = 'msDS-SupportedEncryptionTypes'
 
 # --- Helpers ---
 
@@ -203,6 +252,82 @@ function Add-LabGroupMember {
     }
 }
 
+function Set-LabServiceAccountKerberos {
+    # Converges servicePrincipalName and msDS-SupportedEncryptionTypes on one
+    # account. Desired $SupportedEncryptionTypes = $null means "attribute absent".
+    param(
+        [Parameter(Mandatory)][string]$Sam,
+        [Parameter(Mandatory)][string[]]$ServicePrincipalNames,
+        [Parameter()][AllowNull()][object]$SupportedEncryptionTypes
+    )
+
+    try {
+        # VERIFY-ON-FIRST-RUN: the hyphenated attribute name is accepted by
+        # -Properties and comes back as $null when absent, an integer when set.
+        $u = Get-ADUser -Identity $Sam -Properties servicePrincipalName, $ENCTYPES_ATTR -ErrorAction Stop
+    }
+    catch {
+        $script:summary.Warnings.Add("Kerberos config read on '$Sam' failed: $($_.Exception.Message)")
+        return
+    }
+
+    # SPNs compared as a case-insensitive set. Nulls are filtered first: an absent
+    # attribute must become an empty set - @($null) has Count 1 and would never
+    # compare equal, re-writing the attribute on every run.
+    $normalize = {
+        param($values)
+        (@($values | Where-Object { $_ } | ForEach-Object { ([string]$_).ToLowerInvariant() }) | Sort-Object -Unique) -join "`n"
+    }
+    $spnInSync = (& $normalize $u.servicePrincipalName) -ceq (& $normalize $ServicePrincipalNames)
+
+    $currentEnc = $u.$ENCTYPES_ATTR
+    if ($null -ne $currentEnc) { $currentEnc = [int]$currentEnc }
+    if ($null -eq $SupportedEncryptionTypes) {
+        $encInSync = ($null -eq $currentEnc)
+    }
+    else {
+        $encInSync = ($null -ne $currentEnc) -and ($currentEnc -eq [int]$SupportedEncryptionTypes)
+    }
+
+    if ($spnInSync -and $encInSync) {
+        $script:summary.KerberosConfigUnchanged++
+        return
+    }
+
+    Write-Verbose ("Kerberos config '{0}': spnInSync={1} enc current={2} desired={3}" -f `
+        $Sam, $spnInSync, $currentEnc, $SupportedEncryptionTypes)
+
+    if (-not $spnInSync) {
+        try {
+            # VERIFY-ON-FIRST-RUN: SPN written through the attribute, not setspn.exe.
+            Set-ADUser -Identity $u -Replace @{ servicePrincipalName = [string[]]$ServicePrincipalNames } -ErrorAction Stop
+        }
+        catch {
+            $script:summary.Warnings.Add("SPN write on '$Sam' failed: $($_.Exception.Message)")
+            return
+        }
+    }
+
+    if (-not $encInSync) {
+        try {
+            # VERIFY-ON-FIRST-RUN: Replace with an int and Clear on the hyphenated
+            # attribute; re-run the seed and confirm KerberosConfigUpdated = 0.
+            if ($null -eq $SupportedEncryptionTypes) {
+                Set-ADUser -Identity $u -Clear $ENCTYPES_ATTR -ErrorAction Stop
+            }
+            else {
+                Set-ADUser -Identity $u -Replace @{ $ENCTYPES_ATTR = [int]$SupportedEncryptionTypes } -ErrorAction Stop
+            }
+        }
+        catch {
+            $script:summary.Warnings.Add("$ENCTYPES_ATTR write on '$Sam' failed: $($_.Exception.Message)")
+            return
+        }
+    }
+
+    $script:summary.KerberosConfigUpdated++
+}
+
 function New-LabUser {
     param(
         [Parameter(Mandatory)][string]$Sam,
@@ -217,7 +342,11 @@ function New-LabUser {
         # to lastLogonTimestamp - that attribute is SAM-owned and refuses LDAP writes.
         [Parameter()][bool]$NeverLoggedIn = $false,
         [Parameter()][int]$InactiveDays = 0,
-        [Parameter()][string[]]$AddToGroups = @()
+        [Parameter()][string[]]$AddToGroups = @(),
+        # Kerberoasting fixtures: managed only when at least one SPN is given.
+        # $SupportedEncryptionTypes = $null then means "attribute absent".
+        [Parameter()][string[]]$ServicePrincipalNames = @(),
+        [Parameter()][AllowNull()][object]$SupportedEncryptionTypes = $null
     )
 
     $ouDN = "OU=$OU,$script:DomainDN"
@@ -297,6 +426,11 @@ function New-LabUser {
 
     # Group memberships
     foreach ($g in $AddToGroups) { Add-LabGroupMember -Group $g -MemberSam $Sam }
+
+    # SPN and encryption types (Kerberoasting fixtures only)
+    if ($ServicePrincipalNames.Count -gt 0) {
+        Set-LabServiceAccountKerberos -Sam $Sam -ServicePrincipalNames $ServicePrincipalNames -SupportedEncryptionTypes $SupportedEncryptionTypes
+    }
 }
 
 function New-LabGroup {
@@ -338,7 +472,7 @@ function New-LabGroup {
 $ouNames = 'IT', 'HR', 'Finance', 'Management', 'Service Accounts', 'Disabled Users'
 foreach ($ou in $ouNames) { [void] (New-LabOU -Name $ou -ParentDN $DomainDN) }
 
-# Users (31 total) - clustered to produce realistic cross-vector findings.
+# Users (35 total) - clustered to produce realistic cross-vector findings.
 # NOTE: PasswordAgeDays was removed after the 26-Aug-2026 lab run - pwdLastSet only
 # accepts 0 / -1 via LDAP. InactiveDays / NeverLoggedIn remain as semantic markers.
 $users = @(
@@ -373,12 +507,18 @@ $users = @(
     @{ Sam='ccfo';            Name='Catherine CFO';      OU='Management'; Description="$marker CFO with PNE + intent inactive 100d";                    PNE=$true; InactiveDays=100 }
     @{ Sam='dvp';             Name='David VP';           OU='Management'; Description="$marker Normal VP" }
 
-    # Service Accounts (5) - the high-value findings
-    @{ Sam='svc-backup';      Name='svc-backup';         OU='Service Accounts'; Description="$marker Legacy service account: DA + PNE (Kerberoasting target; SPN pending for Get-KerberosRisks)"; AddToGroups=@('Domain Admins');      PNE=$true }
+    # Service Accounts (9) - the high-value findings
+    @{ Sam='svc-backup';      Name='svc-backup';         OU='Service Accounts'; Description="$marker Legacy service account: DA + PNE + SPN in RC4 (Kerberoasting worst case)"; AddToGroups=@('Domain Admins');      PNE=$true; ServicePrincipalNames=@('MSSQLSvc/bkp-sql01.lab.local:1433'); SupportedEncryptionTypes=$ENCTYPES_RC4_ONLY }
     @{ Sam='svc-sql';         Name='svc-sql';            OU='Service Accounts'; Description="$marker BackupOp + PNE";                                          AddToGroups=@('Backup Operators');   PNE=$true }
     @{ Sam='svc-print';       Name='svc-print';          OU='Service Accounts'; Description="$marker Service account never logged in (dead service?)";          NeverLoggedIn=$true }
     @{ Sam='svc-monitor';     Name='svc-monitor';        OU='Service Accounts'; Description="$marker PNE, no admin";                                            PNE=$true }
     @{ Sam='svc-legacy';      Name='svc-legacy';         OU='Service Accounts'; Description="$marker WORST CASE: DA + PNE + never authenticated since creation";                     AddToGroups=@('Domain Admins');      PNE=$true; InactiveDays=400 }
+
+    # Kerberoastable fixtures - one per encryption-type branch (see .NOTES)
+    @{ Sam='svc-web';         Name='svc-web';            OU='Service Accounts'; Description="$marker SPN, RC4 only, unprivileged (expected Medium / RC4)";            ServicePrincipalNames=@('HTTP/intranet.lab.local');          SupportedEncryptionTypes=$ENCTYPES_RC4_ONLY }
+    @{ Sam='svc-modern';      Name='svc-modern';         OU='Service Accounts'; Description="$marker SPN, AES only, unprivileged (expected Low / AES)";               ServicePrincipalNames=@('HTTP/portal.lab.local');            SupportedEncryptionTypes=$ENCTYPES_AES_ONLY }
+    @{ Sam='svc-mixed';       Name='svc-mixed';          OU='Service Accounts'; Description="$marker SPN, RC4 + AES (0x1C), unprivileged (expected Medium / RC4+AES)"; ServicePrincipalNames=@('MSSQLSvc/app-sql01.lab.local:1433'); SupportedEncryptionTypes=$ENCTYPES_RC4_AES }
+    @{ Sam='svc-default';     Name='svc-default';        OU='Service Accounts'; Description="$marker SPN, enc. types attribute absent (expected Medium / NotConfigured)"; ServicePrincipalNames=@('HTTP/legacy-app.lab.local');       SupportedEncryptionTypes=$null }
 
     # Disabled Users (3) - should NOT appear in default-mode reports
     @{ Sam='jsmith';          Name='Jane Smith';         OU='Disabled Users'; Description="$marker Disabled, intent inactive 300d";                       Disabled=$true; InactiveDays=300 }
@@ -431,3 +571,4 @@ Write-Host "Validate with (from the repository root):" -ForegroundColor Cyan
 Write-Host "  .\scripts\powershell\Get-InactiveUsers.ps1        -IncludeNewlyCreated"
 Write-Host "  .\scripts\powershell\Get-PrivilegedUsers.ps1"
 Write-Host "  .\scripts\powershell\Get-PasswordNeverExpires.ps1"
+Write-Host "  .\scripts\powershell\Get-KerberoastableAccounts.ps1"

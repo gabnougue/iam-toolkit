@@ -19,7 +19,8 @@ experience required.
 - DNS hosted on the DC itself
 - Root OU structure created (`IT`, `HR`, `Finance`, `Management`, `Service Accounts`,
   `Disabled Users`)
-- ~31 seeded users with intentional IAM misconfigurations
+- ~35 seeded users with intentional IAM misconfigurations, including 5 service
+  accounts with an SPN for the Kerberoasting audit
 - 5 custom groups, including 2 empty/orphan groups
 - Cross-references to existing built-in groups (`Domain Admins`, `Backup Operators`,
   `Account Operators`)
@@ -336,7 +337,7 @@ cd iam-toolkit
 
 Expected output: an upfront advisory that `lastLogonTimestamp` / `pwdLastSet` cannot
 be backdated via LDAP (this is expected; see the seed's `.NOTES`), then a summary
-block showing `UsersCreated = 31`, `OUsCreated = 6` (or `OUsExisting = 6` if you
+block showing `UsersCreated = 35`, `OUsCreated = 6` (or `OUsExisting = 6` if you
 pre-created them in Step 7), `GroupsCreated = 5`, `MembershipsAdded = 15`, and
 zero warnings.
 
@@ -391,14 +392,16 @@ mkdir C:\iam-toolkit\outputs -Force
 .\scripts\powershell\Get-InactiveUsers.ps1        -IncludeNewlyCreated -OutputPath .\outputs\inactive.csv
 .\scripts\powershell\Get-PrivilegedUsers.ps1      -OutputPath .\outputs\privileged.csv
 .\scripts\powershell\Get-PasswordNeverExpires.ps1 -OutputPath .\outputs\pne.csv
+.\scripts\powershell\Get-KerberoastableAccounts.ps1 -OutputPath .\outputs\kerberoastable.csv
 
 # Sanity checks (measured against the 27 August lab run)
-(Import-Csv .\outputs\inactive.csv).Count         # expect 28 — every enabled account. See NOTE below.
+(Import-Csv .\outputs\inactive.csv).Count         # expect 32 — every enabled account. See NOTE below.
 (Import-Csv .\outputs\privileged.csv).Count       # expect ~16
 (Import-Csv .\outputs\pne.csv).Count              # expect 9
+(Import-Csv .\outputs\kerberoastable.csv).Count   # expect 5 - svc-backup Critical once SDProp has run (Step 10)
 ```
 
-**NOTE on `inactive.csv = 28`.** Because `lastLogonTimestamp` cannot be backdated via
+**NOTE on `inactive.csv = 32`.** Because `lastLogonTimestamp` cannot be backdated via
 LDAP (it is owned by the SAM) and every seeded account has `whenCreated = today`, the
 inactivity column matches the entire enabled surface in the lab. This is a symptom of
 a non-discriminating criterion, not of a dormant estate — see the calibration note in
