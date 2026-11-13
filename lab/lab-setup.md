@@ -3,7 +3,7 @@
 Step-by-step guide to build the lab environment used by the IAM Toolkit. At the end you
 will have a single Windows Server domain controller running `lab.local`, populated with
 the misconfigurations catalogued in [lab-scenarios.md](lab-scenarios.md), against which
-the three detection scripts can be executed.
+the four detection scripts can be executed.
 
 **Estimated total time**: 60–90 minutes (longer with Windows updates).
 
@@ -394,7 +394,10 @@ mkdir C:\iam-toolkit\outputs -Force
 .\scripts\powershell\Get-PasswordNeverExpires.ps1 -OutputPath .\outputs\pne.csv
 .\scripts\powershell\Get-KerberoastableAccounts.ps1 -OutputPath .\outputs\kerberoastable.csv
 
-# Sanity checks (measured against the 27 August lab run)
+# Sanity checks - 32 (inactive) and 5 (kerberoastable) are EXPECTED values after the
+# seed extension, to be confirmed on the first run; 16 (privileged) and 9 (pne) were
+# measured on 27 August and do not change with the extension (no new privileged or
+# PNE account).
 (Import-Csv .\outputs\inactive.csv).Count         # expect 32 — every enabled account. See NOTE below.
 (Import-Csv .\outputs\privileged.csv).Count       # expect ~16
 (Import-Csv .\outputs\pne.csv).Count              # expect 9
@@ -509,7 +512,7 @@ Remove the `-WhatIf` once you have confirmed the list. This will not delete the 
 
 ## What is intentionally NOT covered
 
-The lab is the minimum environment needed to exercise the toolkit's three detection
+The lab is the minimum environment needed to exercise the toolkit's four detection
 scripts. The following are out of scope for Phase 1 and would be added if/when the
 toolkit covers the corresponding detection:
 
