@@ -40,7 +40,8 @@ authenticated since creation".
 ### A criterion that matches 100% of the perimeter is not a criterion
 
 The 27 August re-run confirmed the point: `inactive.csv` returns **every enabled
-account** in the lab (28 rows out of 31 — all users minus the 3 disabled). That is not
+account** in the lab (28 rows out of 31 — all users minus the 3 disabled; 32 out of 35
+since the Kerberoasting fixtures were added). That is not
 a symptom of a dormant estate; it is a symptom of the observable being uniform across
 the seeded surface. **In a real audit, an inactivity column that surfaces the entire
 perimeter means the directory-side data is not exploitable** — typical causes: a
@@ -143,9 +144,14 @@ backup operations.
   Observable: `PasswordAge = ~0` in the lab (see calibration note); the threat model
   below still holds because the *architectural* misconfiguration (svc account +
   DA + PNE) is what the audit is meant to flag.
-- No SPN yet — it will be added when the seed is extended for `Get-KerberosRisks.ps1`.
-  Without an SPN, `svc-backup` is not literally Kerberoastable *in the lab*, but the
-  finding pattern (naming + DA + PNE) is unambiguous to a reviewer.
+- SPN `MSSQLSvc/bkp-sql01.lab.local:1433`, set by the seed through the
+  `servicePrincipalName` attribute.
+- `msDS-SupportedEncryptionTypes = 0x04` (RC4 only): the service ticket an attacker
+  requests is RC4-encrypted, the fastest case to crack offline.
+- With an SPN, DA membership and a non-rotating password, `svc-backup` is literally
+  Kerberoastable in the lab: it is the worst case `Get-KerberoastableAccounts.ps1`
+  grades **Critical**. The other encryption-type branches are covered by four
+  unprivileged fixtures (Scenario 15).
 
 **Real-world context**: "the backup vendor's documentation said the service account
 needs `Domain Admin` rights," nobody pushed back, the account was created in 2022 and
@@ -171,8 +177,13 @@ service accounts must not hold DA rights and must rotate passwords.
 - `Get-PasswordNeverExpires.ps1` → surfaces at the top of the privileged tier (AdminCount=1),
   `PasswordAge = ~0` in the lab (uniform across seeded PNE accounts; in a real audit the
   age would be measured in years)
+- `Get-KerberoastableAccounts.ps1` → `Critical, svc-backup, EncryptionType = RC4,
+  SupportedEncryptionTypesRaw = 4`, first row of the report. Requires SDProp to have
+  set `adminCount = 1` (lab-setup.md, Step 10); before that the row reads `Medium`.
 
-**Cross-vector**: 2 reports — the privileged-stale-credential combination.
+**Cross-vector**: 3 reports — privileged membership, a non-rotating password, and an
+RC4 service ticket anyone can request. Read together, they say "any domain user is one
+offline cracking run away from Domain Admin".
 
 **Remediation** (in order of preference):
 1. Migrate to a Group Managed Service Account (gMSA). Automatic 30-day rotation,
@@ -208,7 +219,8 @@ provisioned for a project that was cancelled before rollout, but the identity re
 had already granted DA and PNE for "we need it before Friday" reasons.
 
 **Threat model**: combines every other scenario.
-- Same Kerberoasting path as Scenario 3 (once an SPN is present).
+- Same Kerberoasting path as Scenario 3 as soon as an SPN is set on it (the lab
+  leaves `svc-legacy` without one; `svc-backup` carries the Kerberoasting case).
 - Nobody would notice if it were used — operational blind spot.
 - Forgotten = unmonitored = a potential persistence mechanism for an attacker who has
   already compromised the environment.
@@ -584,41 +596,96 @@ which case treat as a never-used-after-reset finding.
 
 ---
 
+## Scenario 15 — Kerberoasting Exposure Graded by Encryption Type
+
+**Personas**: `svc-web`, `svc-mixed`, `svc-default`, `svc-modern` (all OU=Service
+Accounts, no privileged group), alongside `svc-backup` from Scenario 3.
+
+**Configuration in the lab**: each account carries one SPN in `lab.local` and a
+different `msDS-SupportedEncryptionTypes` value, so that every branch of the
+decoding and severity grading in `Get-KerberoastableAccounts.ps1` is exercised:
+
+| Account       | SPN                                   | Encryption types           | Expected severity / EncryptionType |
+|---------------|---------------------------------------|----------------------------|------------------------------------|
+| `svc-backup`  | `MSSQLSvc/bkp-sql01.lab.local:1433`   | `0x04` — RC4 only          | Critical / `RC4` (Domain Admins)   |
+| `svc-web`     | `HTTP/intranet.lab.local`             | `0x04` — RC4 only          | Medium / `RC4`                     |
+| `svc-mixed`   | `MSSQLSvc/app-sql01.lab.local:1433`   | `0x1C` — RC4 + AES         | Medium / `RC4+AES`                 |
+| `svc-default` | `HTTP/legacy-app.lab.local`           | attribute absent           | Medium / `NotConfigured`           |
+| `svc-modern`  | `HTTP/portal.lab.local`               | `0x18` — AES only          | Low / `AES`                        |
+
+The seed writes these attributes and nothing else: it requests no ticket and runs no
+attack. The SPN host names do not need to exist — an SPN is a string the KDC maps to
+an account.
+
+**Real-world context**: service accounts accumulate SPNs over years of application
+deployments, and almost none of them have `msDS-SupportedEncryptionTypes` set
+explicitly — `svc-default` is the most common case in production, not the exception.
+`svc-mixed` is what an incomplete AES migration looks like: AES was added, RC4 was
+never removed.
+
+**Threat model**: identical to Scenario 3 without the privilege. Any domain user can
+request a ticket for each of these SPNs and attack it offline. The encryption type
+sets how long that takes — hours for RC4, far longer for AES, unless the password is
+weak. Without privilege, a cracked password yields only what the service account can
+reach (typically the application's data), hence Medium / Low rather than Critical.
+
+**Detection**: `Get-KerberoastableAccounts.ps1` — the four rows above, below
+`svc-backup`. Inside the Medium tier the password age is uniform in the lab, so the
+order falls to `SamAccountName`: `svc-default`, `svc-mixed`, `svc-web`.
+
+`svc-mixed` is the fixture for point 5 of the script's Validation status: whether the
+KDC still issues an RC4 ticket for a `0x1C` account when the client asks for RC4 only.
+`Medium / RC4+AES` is a conservative grading until that test is run. Likewise,
+`svc-default` is graded as RC4-exposed because the effective default depends on each
+DC's `DefaultDomainSupportedEncTypes` value and patch level.
+
+**Remediation**: same order as Scenario 3 — remove SPNs nothing uses, migrate to a
+gMSA, otherwise set `0x18` and reset the password to a long random value so AES keys
+are regenerated.
+
+---
+
 ## Cross-vector findings matrix
 
-The table below shows which seeded principals surface in each of the three reports.
-The two-or-three-cell rows are the highest-priority findings in any real audit.
+The table below shows which seeded principals surface in each of the four reports.
+The rows with several cells set are the highest-priority findings in any real audit.
+The Kerberoastable column gives the severity `Get-KerberoastableAccounts.ps1` assigns
+(`—` = not in that report).
 
 **The Inactive column has lost its discriminating power in this lab.** Every enabled
 account has `whenCreated = today` AND `lastLogonTimestamp = null` (see calibration
-note), so `Get-InactiveUsers.ps1 -IncludeNewlyCreated` returns all 28 enabled
+note), so `Get-InactiveUsers.ps1 -IncludeNewlyCreated` returns all 32 enabled
 accounts. The column is marked "yes" for every enabled seeded account below, kept for
 completeness. In an audit report of the lab this signal would be **discounted, not
 consumed** — the priority list is derived from the intersection with `Privileged` and
 `PNE` (see the join query below), and the `Inactive` column is treated as noise for
 this dataset.
 
-| Persona            | Inactive | Privileged | PNE | Notes |
-|--------------------|:--------:|:----------:|:---:|---|
-| `svc-legacy`       | yes      | yes        | yes | Worst case — surfaces in all 3 reports (see Scenario 4) |
-| `sysadmin-legacy`  | yes      | yes        | yes | Backup Op + PNE + never-authenticated (see Scenario 2) |
-| `svc-backup`       | yes      | yes        | yes | Kerberoasting archetype; SPN pending (see Scenario 3). Now 3-way because Inactive is uniform |
-| `svc-sql`          | yes      | yes        | yes | Backup Op + PNE. Now 3-way for the same reason |
-| `mlefevre`         | yes      | yes        | —   | Stale DA (never-authenticated) |
-| `ccfo`             | yes      | —          | yes | Exec + PNE |
-| `alopez`           | yes      | —          | yes | HR + PNE |
-| `aceo`             | yes      | yes        | —   | Excessive operator (Account Operators) |
-| `jadams`           | yes      | yes        | —   | Active DA — but observable is still "never authenticated" in the lab |
-| `rmills`           | yes      | —          | yes | Standalone PNE |
-| `pkim`             | yes      | —          | yes | Standalone PNE |
-| `svc-monitor`      | yes      | —          | yes | Service PNE (not privileged) |
-| `cstein`           | yes      | —          | —   | Provisioning ghost (never authenticated) |
-| `jthomas`          | yes      | —          | —   | Provisioning ghost |
-| `svc-print`        | yes      | —          | —   | Provisioning ghost (service) |
-| `ldubois`\*        | yes      | —          | —   | Too-young filter validation |
-| `ptaylor`          | yes      | —          | —   | Must-change-at-next-logon — appears alongside the others because Inactive discriminates nothing |
-| `akovach`, `mbianchi`, `ksimon`, `ewright`, `dweber`, `gnakamura`, `msanchez`, `tbrown`, `hwhite`, `bcoo`, `dvp` | yes | — | — | Baseline users — surface in Inactive only because the column is non-discriminating in this lab |
-| `jsmith`/`rpark`/`wlegacy` | — | —      | —\* | Disabled — must NOT surface in any default-mode report |
+| Persona            | Inactive | Privileged | PNE | Kerberoastable | Notes |
+|--------------------|:--------:|:----------:|:---:|:--------------:|---|
+| `svc-legacy`       | yes      | yes        | yes | — | Worst case — surfaces in all 3 reports (see Scenario 4) |
+| `sysadmin-legacy`  | yes      | yes        | yes | — | Backup Op + PNE + never-authenticated (see Scenario 2) |
+| `svc-backup`       | yes      | yes        | yes | Critical | Kerberoasting worst case: DA + PNE + RC4 SPN — the only persona in all 4 reports (see Scenario 3) |
+| `svc-sql`          | yes      | yes        | yes | — | Backup Op + PNE. Now 3-way for the same reason |
+| `mlefevre`         | yes      | yes        | —   | — | Stale DA (never-authenticated) |
+| `ccfo`             | yes      | —          | yes | — | Exec + PNE |
+| `alopez`           | yes      | —          | yes | — | HR + PNE |
+| `aceo`             | yes      | yes        | —   | — | Excessive operator (Account Operators) |
+| `jadams`           | yes      | yes        | —   | — | Active DA — but observable is still "never authenticated" in the lab |
+| `rmills`           | yes      | —          | yes | — | Standalone PNE |
+| `pkim`             | yes      | —          | yes | — | Standalone PNE |
+| `svc-monitor`      | yes      | —          | yes | — | Service PNE (not privileged) |
+| `cstein`           | yes      | —          | —   | — | Provisioning ghost (never authenticated) |
+| `jthomas`          | yes      | —          | —   | — | Provisioning ghost |
+| `svc-print`        | yes      | —          | —   | — | Provisioning ghost (service) |
+| `ldubois`\*        | yes      | —          | —   | — | Too-young filter validation |
+| `ptaylor`          | yes      | —          | —   | — | Must-change-at-next-logon — appears alongside the others because Inactive discriminates nothing |
+| `akovach`, `mbianchi`, `ksimon`, `ewright`, `dweber`, `gnakamura`, `msanchez`, `tbrown`, `hwhite`, `bcoo`, `dvp` | yes | — | — | — | Baseline users — surface in Inactive only because the column is non-discriminating in this lab |
+| `svc-web`          | yes      | —          | —   | Medium | RC4-only SPN, unprivileged (Scenario 15) |
+| `svc-mixed`        | yes      | —          | —   | Medium | RC4 + AES SPN — fixture for the 0x1C test (Scenario 15) |
+| `svc-default`      | yes      | —          | —   | Medium | SPN, encryption types not configured (Scenario 15) |
+| `svc-modern`       | yes      | —          | —   | Low | AES-only SPN (Scenario 15) |
+| `jsmith`/`rpark`/`wlegacy` | — | —      | —\* | — | Disabled — must NOT surface in any default-mode report |
 
 \* `wlegacy` carries `PasswordNeverExpires` (former DA member, flag never removed at
 off-boarding). It stays out of the default `pne.csv` because the LDAP filter excludes
@@ -641,20 +708,22 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
 # 1. Seed the lab (idempotent — safe to re-run)
 .\lab\seed-test-users.ps1
 
-# 2. Run the three detection scripts
-.\scripts\powershell\Get-InactiveUsers.ps1        -IncludeNewlyCreated -OutputPath .\outputs\inactive.csv
-.\scripts\powershell\Get-PrivilegedUsers.ps1      -OutputPath .\outputs\privileged.csv
-.\scripts\powershell\Get-PasswordNeverExpires.ps1 -OutputPath .\outputs\pne.csv
+# 2. Run the detection scripts
+.\scripts\powershell\Get-InactiveUsers.ps1          -IncludeNewlyCreated -OutputPath .\outputs\inactive.csv
+.\scripts\powershell\Get-PrivilegedUsers.ps1        -OutputPath .\outputs\privileged.csv
+.\scripts\powershell\Get-PasswordNeverExpires.ps1   -OutputPath .\outputs\pne.csv
+.\scripts\powershell\Get-KerberoastableAccounts.ps1 -OutputPath .\outputs\kerberoastable.csv
 ```
 
-### Expected counts (lab baseline — measured on the 27 August run)
+### Expected counts (lab baseline — 27 August measurements, adjusted for the Kerberoasting fixtures)
 
 | Report                          | Expected rows | Notes |
 |---------------------------------|:-------------:|---|
-| `inactive.csv` (with switch)    | **28**        | All enabled seeded users (31 − 3 disabled). `Get-InactiveUsers.ps1` cannot distinguish them because `whenCreated = today` and `lastLogonTimestamp = null` on every account. See the "criterion that matches 100%" note above — read this column as noise, not signal, in the lab dataset. |
+| `inactive.csv` (with switch)    | **32**        | All enabled seeded users (35 − 3 disabled; 28 measured on 27 August, + the 4 Kerberoasting fixtures, expected not yet measured). `Get-InactiveUsers.ps1` cannot distinguish them because `whenCreated = today` and `lastLogonTimestamp = null` on every account. See the "criterion that matches 100%" note above — read this column as noise, not signal, in the lab dataset. |
 | `inactive.csv` (without switch) | 0             | All seeded users excluded as too-young — validates the filter |
 | `privileged.csv`                | **≈ 16**      | Direct + Nested walk across DA, Backup Ops, Account Ops, plus the built-in `Administrator` user appearing across DA / Enterprise Admins / Schema Admins / Administrators. Cross-check with `Step 10 — Force SDProp` in [lab-setup.md](lab-setup.md); `adminCount` is `$null` on fresh DA members until SDProp propagates. |
 | `pne.csv`                       | 9             | Excludes disabled, excludes managed service accounts (none seeded) |
+| `kerberoastable.csv`            | **5**         | Expected, not yet measured. `svc-backup` (Critical), then `svc-default`, `svc-mixed`, `svc-web` (Medium), then `svc-modern` (Low). No other user object in the lab carries an SPN; `krbtgt` is excluded by the script. See Scenario 15. |
 | `pne.csv` (`-IncludeDisabled`)  | 11+           | The 9 above, plus `wlegacy` (seeded disabled former DA with the PNE flag left behind) and the built-in `Guest` (disabled, PNE, `pwdLastSet = 0` so it lands at the bottom of the sort with empty PasswordLastSet / PasswordAge). `krbtgt` may also appear depending on domain configuration. |
 
 ### Validation checks to perform
@@ -670,7 +739,7 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
    is `Never` on every row the ordering within each tier is by `SamAccountName`.
    Expect the privileged tier to contain `jadams`, `mlefevre`, `svc-backup`,
    `svc-legacy`, `svc-sql`, `sysadmin-legacy`, `aceo` (once SDProp has propagated),
-   followed by the non-privileged enabled accounts alphabetically. Total 28 rows —
+   followed by the non-privileged enabled accounts alphabetically. Total 32 rows —
    see the calibration note before treating this as a finding.
 3. **`privileged.csv`** should contain (at minimum) rows for `jadams`, `mlefevre`,
    `svc-backup`, `svc-legacy` all tagged `Direct, Domain Admins`, and each of them
@@ -688,6 +757,12 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
    the built-in `Guest`. `Guest` must land at the bottom of the sort with both
    `PasswordLastSet` and `PasswordAge` empty — that empty pair is the `pwdLastSet = 0`
    signal, not missing data (Scenario 14).
+6. **`kerberoastable.csv`**: 5 rows, in the order `svc-backup` (Critical / `RC4`),
+   `svc-default` (Medium / `NotConfigured`), `svc-mixed` (Medium / `RC4+AES`),
+   `svc-web` (Medium / `RC4`), `svc-modern` (Low / `AES`). Check
+   `SupportedEncryptionTypesRaw` against Scenario 15 (`4`, empty, `28`, `4`, `24`) —
+   that column is the evidence the decoding is right. If `svc-backup` reads `Medium`,
+   SDProp has not run yet (lab-setup.md, Step 10).
 
 ### Cross-vector join
 
