@@ -718,15 +718,15 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
 .\scripts\powershell\Get-KerberoastableAccounts.ps1 -OutputPath .\outputs\kerberoastable.csv
 ```
 
-### Expected counts (lab baseline — 27 August measurements, adjusted for the Kerberoasting fixtures)
+### Expected counts (lab baseline — measured 27-Nov-2026 on the rebuilt lab)
 
 | Report                          | Expected rows | Notes |
 |---------------------------------|:-------------:|---|
-| `inactive.csv` (with switch)    | **32**        | All enabled seeded users (35 − 3 disabled; 28 measured on 27 August, + the 4 Kerberoasting fixtures, expected not yet measured). `Get-InactiveUsers.ps1` cannot distinguish them because `whenCreated = today` and `lastLogonTimestamp = null` on every account. See the "criterion that matches 100%" note above — read this column as noise, not signal, in the lab dataset. |
+| `inactive.csv` (with switch)    | **32**        | All enabled seeded users (35 − 3 disabled; measured 27-Nov-2026). `Get-InactiveUsers.ps1` cannot distinguish them because `whenCreated = today` and `lastLogonTimestamp = null` on every account. See the "criterion that matches 100%" note above — read this column as noise, not signal, in the lab dataset. |
 | `inactive.csv` (without switch) | 0             | All seeded users excluded as too-young — validates the filter |
-| `privileged.csv`                | **≈ 16**      | Direct + Nested walk across DA, Backup Ops, Account Ops, plus the built-in `Administrator` user appearing across DA / Enterprise Admins / Schema Admins / Administrators. Cross-check with `Step 10 — Force SDProp` in [lab-setup.md](lab-setup.md); `adminCount` is `$null` on fresh DA members until SDProp propagates. |
+| `privileged.csv`                | **16**        | Measured 27-Nov-2026. Direct + Nested walk across DA, Backup Ops, Account Ops, plus the built-in `Administrator` user appearing across DA / Enterprise Admins / Schema Admins / Administrators. Cross-check with `Step 10 — Force SDProp` in [lab-setup.md](lab-setup.md); `adminCount` is `$null` on fresh DA members until SDProp propagates. |
 | `pne.csv`                       | 9             | Excludes disabled, excludes managed service accounts (none seeded) |
-| `kerberoastable.csv`            | **5**         | Expected, not yet measured. `svc-backup` (Critical), then `svc-default`, `svc-mixed`, `svc-web` (Medium), then `svc-modern` (Low). No other user object in the lab carries an SPN; `krbtgt` is excluded by the script. See Scenario 15. |
+| `kerberoastable.csv`            | **5**         | Measured 27-Nov-2026, order and severities as listed. `svc-backup` (Critical), then `svc-default`, `svc-mixed`, `svc-web` (Medium), then `svc-modern` (Low). No other user object in the lab carries an SPN; `krbtgt` is excluded by the script. See Scenario 15. |
 | `pne.csv` (`-IncludeDisabled`)  | 11+           | The 9 above, plus `wlegacy` (seeded disabled former DA with the PNE flag left behind) and the built-in `Guest` (disabled, PNE, `pwdLastSet = 0` so it lands at the bottom of the sort with empty PasswordLastSet / PasswordAge). `krbtgt` may also appear depending on domain configuration. |
 
 ### Validation checks to perform
