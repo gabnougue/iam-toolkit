@@ -130,7 +130,13 @@
       OUs:           queried by Name under parent; created only if absent.
       Users:         queried by SamAccountName; created if absent, updated if
                      Description / Enabled / PasswordNeverExpires /
-                     ChangePasswordAtLogon differ.
+                     ChangePasswordAtLogon differ. ChangePasswordAtLogon is read
+                     back from the raw pwdLastSet (Int64 FileTime, 0 = must
+                     change at next logon) and re-applied only when requested
+                     and pwdLastSet is not 0. A second run reports
+                     UsersUpdated = 0. The reverse case (pwdLastSet = 0 on an
+                     account that does not request it) is not corrected: no
+                     seeded account is in that state.
       Groups:        queried by Name; created if absent.
       Memberships:   Get-ADGroupMember checked before Add-ADGroupMember.
       SPN / enc.:    servicePrincipalName compared as a case-insensitive set, and
@@ -360,7 +366,9 @@ function New-LabUser {
     # accounts, because $existing.PasswordNeverExpires read as unequal to $PNE even
     # when the account was already correctly configured). Deriving from UAC bypasses
     # that friendly-property quirk entirely.
-    $existing = Get-ADUser -Filter "SamAccountName -eq `"$Sam`"" -Properties Description, userAccountControl -ErrorAction SilentlyContinue
+    # pwdLastSet is fetched raw so ChangePasswordAtLogon can be read back (0 = the
+    # user must change the password at next logon).
+    $existing = Get-ADUser -Filter "SamAccountName -eq `"$Sam`"" -Properties Description, userAccountControl, pwdLastSet -ErrorAction SilentlyContinue
 
     if (-not $existing) {
         $securePwd = ConvertTo-SecureString $DefaultPassword -AsPlainText -Force
@@ -398,22 +406,34 @@ function New-LabUser {
         $currentEnabled = -not (($uac -band 0x2)     -ne 0)   # 0x2     = ACCOUNTDISABLE
         $currentPNE     =        ($uac -band 0x10000) -ne 0   # 0x10000 = DONT_EXPIRE_PASSWORD
 
+        # ChangePasswordAtLogon = $true is stored as pwdLastSet = 0. The raw value
+        # is an Int64 FileTime: compare it as [Int64], never as a date. A missing
+        # value is treated as "not set", so the flag is re-applied rather than
+        # silently skipped.
+        # VERIFY-ON-FIRST-RUN: confirm -Properties pwdLastSet returns the raw Int64
+        # (0 for ptaylor after the first run), and that the second run reports
+        # UsersUpdated = 0.
+        $currentMustChange = ($null -ne $existing.pwdLastSet) -and ([Int64]$existing.pwdLastSet -eq 0)
+
         $updateParams = @{}
         if ($existing.Description -ne $Description)     { $updateParams.Description          = $Description }
         if ($currentEnabled       -ne (-not $Disabled)) { $updateParams.Enabled              = (-not $Disabled) }
         if ($currentPNE           -ne $PNE)             { $updateParams.PasswordNeverExpires = $PNE }
-        if ($ChangePasswordAtLogon) {
-            # ChangePasswordAtLogon is not directly readable as a friendly property; always re-apply when requested
+        if ($ChangePasswordAtLogon -and -not $currentMustChange) {
+            # Requested but not in effect (pwdLastSet -ne 0): re-apply. The reverse
+            # case is out of scope - see Idempotency in .NOTES.
             $updateParams.ChangePasswordAtLogon = $true
         }
 
         if ($updateParams.Count -gt 0) {
-            # Diagnostic trace: on a re-run against unchanged state this should print
-            # for ptaylor only (ChangePasswordAtLogon is re-applied by design). Any
-            # other account appearing here means a comparison is misfiring - the
-            # printed uac / current / desired triplet says which one.
-            Write-Verbose ("Updating '{0}': uac=0x{1:X} enabled {2}->{3} pne {4}->{5} fields=[{6}]" -f `
-                $Sam, $uac, $currentEnabled, (-not $Disabled), $currentPNE, $PNE, ($updateParams.Keys -join ','))
+            # Diagnostic trace: on a re-run against unchanged state this should not
+            # print at all (ptaylor included, now that ChangePasswordAtLogon is read
+            # back from pwdLastSet). Any account appearing here means a comparison is
+            # misfiring - the printed uac / pwdLastSet / current / desired values
+            # say which one.
+            Write-Verbose ("Updating '{0}': uac=0x{1:X} pwdLastSet={2} enabled {3}->{4} pne {5}->{6} mustChange {7}->{8} fields=[{9}]" -f `
+                $Sam, $uac, $existing.pwdLastSet, $currentEnabled, (-not $Disabled), $currentPNE, $PNE, `
+                $currentMustChange, $ChangePasswordAtLogon, ($updateParams.Keys -join ','))
             try {
                 Set-ADUser -Identity $existing @updateParams -ErrorAction Stop
                 $script:summary.UsersUpdated++
