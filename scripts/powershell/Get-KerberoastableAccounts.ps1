@@ -93,6 +93,11 @@
         on the attacker's machine and leaves no trace in the domain at all. In
         practice the attack is silent. The defensible move is to find and fix the
         exposed configuration upstream: this script.
+        An alert on 4769 with encryption type 0x17 (RC4) is noisy for RC4-only
+        accounts: every legitimate ticket they receive is 0x17 (observed on
+        lab.local, 27-Nov-2026). It only becomes discriminating once the account
+        is moved to AES - from then on an RC4 ticket for it is an anomaly. The
+        remediation is therefore what makes the detection possible.
 
       Worst case - tie-in to finding F-01 of the sample audit report
         An account that is both kerberoastable AND privileged turns "any domain
@@ -124,10 +129,11 @@
         RC4            - RC4 set, no AES.
         RC4+AES        - both set. The account keeps an RC4 key and declares RC4
                          as accepted, so it is graded as RC4-exposed - a
-                         conservative classification. Whether the KDC actually
-                         issues an RC4 ticket for a 0x1C account when the client
-                         requests RC4 only is NOT confirmed; it must be tested in
-                         the lab (see Validation status, point 5).
+                         conservative classification. With a standard client,
+                         a 0x1C account receives an AES256 ticket (lab.local,
+                         27-Nov-2026). Whether the KDC still issues RC4 when the
+                         client requests RC4 only is NOT tested (see Validation
+                         status, point 5).
         DES / DES+...  - legacy DES bits present. Treated as RC4-exposed (worse).
         NotConfigured  - attribute absent or no cipher bit set. See below.
 
@@ -142,6 +148,11 @@
         script cannot read the KDC registry, so it treats NotConfigured as
         RC4-exposed - the conservative reading. Confirm on the target DCs before
         downgrading any NotConfigured row.
+        Observed on lab.local, 27-Nov-2026 (Windows Server 2022 DC, fully
+        patched): an account without the attribute receives an AES256 service
+        ticket from a standard client. The RC4-exposed grading is kept anyway: the
+        effective default depends on each DC's registry and patch level, and one
+        lab DC says nothing about a client's DCs.
 
     AES keys may not exist even when the attribute says AES:
       An account only holds AES keys if its password was last set after the domain
@@ -197,12 +208,17 @@
         2. Enabled and PasswordLastSet are populated when requested by name.
         3. krbtgt is excluded by RID 502, including under -IncludeDisabled. The
            krbtgt_<n> clause was not exercised: the lab has no RODC.
+        5. Ticket encryption actually issued, tested defensively on 27-Nov-2026:
+           service tickets requested with klist get (standard Windows client, on
+           the DC) and cross-checked against the 4769 events. svc-backup and
+           svc-web (0x04) -> RC4 (0x17); svc-mixed (0x1C), svc-default (absent)
+           and svc-modern (0x18) -> AES256 (0x12). klist and 4769 agree.
       Not yet verified - still tagged VERIFY-ON-FIRST-RUN:
-        5. RC4+AES grading: set msDS-SupportedEncryptionTypes = 0x1C on a test
-           account, request its ticket with impacket GetUserSPNs.py, and read the
-           hash prefix ($krb5tgs$23$ = RC4, $krb5tgs$18$ = AES256) to confirm or
-           refute that a 0x1C account can still yield an RC4 ticket. Until then
-           RC4+AES stays graded as RC4-exposed (svc-mixed reads Medium).
+        5b. A client that requests RC4 only, against a 0x1C account: does the KDC
+           still issue an RC4 ticket? A standard client asks for AES first, so the
+           test above does not answer it. Until it is tested, RC4+AES stays graded
+           as RC4-exposed (svc-mixed reads Medium), and so does NotConfigured,
+           whose behaviour also depends on each DC.
       (Point 4 of the pre-run checklist - zero rows against the unextended seed -
       no longer applies: the seed now carries the SPN fixtures.)
 
@@ -314,8 +330,9 @@ $rawRows = foreach ($u in $users) {
     $encLabel = ConvertTo-EncryptionTypeLabel -RawValue $rawEnc
 
     # Only AES-only accounts escape the RC4-exposed grading (see .NOTES)
-    # VERIFY-ON-FIRST-RUN: point 5 of the Validation status - confirm with a real
-    # ticket request whether a 0x1C (RC4+AES) account can still yield RC4.
+    # VERIFY-ON-FIRST-RUN: point 5b of the Validation status - a standard client
+    # gets AES256 for a 0x1C account (27-Nov-2026); a client requesting RC4 only
+    # has not been tested. RC4+AES stays RC4-exposed until it is.
     $rc4Exposed = $encLabel -ne 'AES'
     $privileged = ($u.adminCount -eq 1)
 
