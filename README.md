@@ -16,7 +16,7 @@ repeatable way to surface identity hygiene issues in an AD domain.
 
 **[Read the sample audit report →](reports/sample-audit-report.md)**
 
-A full audit pass run against the reproducible lab: four severity-graded findings,
+A full audit pass run against the reproducible lab: five severity-graded findings,
 each with the attack mechanism spelled out, a remediation, and an effort estimate.
 The stated limits of the audit are part of the report.
 
@@ -36,6 +36,7 @@ English.
 | `Get-InactiveUsers.ps1` | Enabled accounts with no recent logon activity |
 | `Get-PrivilegedUsers.ps1` | Members (direct and nested) of sensitive AD groups |
 | `Get-PasswordNeverExpires.ps1` | Accounts flagged with `PasswordNeverExpires` |
+| `Get-KerberoastableAccounts.ps1` | User accounts carrying an SPN (Kerberoasting exposure), graded by privilege and accepted encryption types |
 
 Each script writes a CSV ready to be reviewed, filtered, or fed into a report.
 
@@ -64,6 +65,9 @@ Sample CSV output from a real lab run is in
 
 # Enabled accounts with non-expiring passwords
 .\scripts\powershell\Get-PasswordNeverExpires.ps1 -OutputPath .\outputs\pwd-never-expires.csv
+
+# User accounts exposed to Kerberoasting
+.\scripts\powershell\Get-KerberoastableAccounts.ps1 -OutputPath .\outputs\kerberoastable.csv
 ```
 
 Every script supports `-OutputPath` and ships with comment-based help
@@ -85,8 +89,9 @@ a state whose expected output is known in advance.
 - [`lab/lab-setup.md`](lab/lab-setup.md) — building the DC from scratch, on a
   hypervisor or on Azure, with the gotchas specific to each
 - [`lab/seed-test-users.ps1`](lab/seed-test-users.ps1) — populates the domain with
-  31 users and clustered misconfigurations (idempotent)
-- [`lab/lab-scenarios.md`](lab/lab-scenarios.md) — the 14 scenarios the lab
+  35 users and clustered misconfigurations, including five kerberoastable service
+  accounts (idempotent)
+- [`lab/lab-scenarios.md`](lab/lab-scenarios.md) — the 15 scenarios the lab
   simulates, each with its real-world context, threat model, and remediation
 
 ## Repository layout
@@ -106,9 +111,13 @@ iam-toolkit/
   threat-model catalogue.
 - **Phase 2 — complete.** Lab validated against a live domain, sample outputs,
   sample audit report, methodology guide. Tagged `v1.0.0`.
-- **Phase 3 — next.** `Get-KerberosRisks.ps1`: unconstrained and constrained
-  delegation, resource-based constrained delegation, kerberoastable privileged
-  accounts. Lab extension to match.
+- **Phase 3 — in progress.** Kerberos attack paths, one script per finding.
+  - *Delivered:* `Get-KerberoastableAccounts.ps1`, validated against the rebuilt
+    lab on 27 November 2026, with the seed extension and the matching findings in
+    the sample report. Tagged `v1.1.0`.
+  - *Next:* `Get-KerberosDelegations.ps1` — unconstrained, constrained (with and
+    without protocol transition) and resource-based constrained delegation, with
+    the lab fixtures to match.
 - **Phase 4.** Packaging as an "IAM Health Check Kit" for external use.
 
 ## License
