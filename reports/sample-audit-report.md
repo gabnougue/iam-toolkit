@@ -52,9 +52,10 @@ dans 6 unités d'organisation ; 13 groupes d'administration interrogés.
 | `Get-KerberoastableAccounts.ps1` | Comptes utilisateurs portant un SPN, avec les types de chiffrement Kerberos qu'ils acceptent |
 
 Aucun de ces scripts ne modifie l'annuaire : ils lisent des attributs LDAP et
-produisent des fichiers CSV. En particulier, aucun ticket Kerberos n'a été demandé
-pendant l'audit : l'exposition au Kerberoasting est déduite de la configuration des
-comptes, non démontrée par une attaque.
+produisent des fichiers CSV. L'exposition au Kerberoasting est déduite de la
+configuration des comptes. Elle a été complétée par un contrôle défensif, sans
+cassage : des tickets de service ont été demandés avec le client Windows standard,
+et leur type de chiffrement a été lu (voir section 5).
 
 Les quatre rapports sont ensuite croisés sur le `SamAccountName`. Ce croisement
 est le cœur de la démarche : un compte qui apparaît dans un seul rapport est
@@ -127,7 +128,9 @@ passe candidats hors ligne, à son rythme : plus aucune interaction avec l'annua
 donc ni verrouillage de compte ni échec d'authentification à détecter. En RC4, cette
 clé est un simple condensat MD4 du mot de passe, sans sel ni itérations, ce qui permet
 de tester des milliards de candidats par seconde sur une carte graphique. Côté
-contrôleur, la demande de ticket ne se distingue pas d'un accès légitime au service.
+contrôleur, la demande de ticket ne déclenche rien : pour un compte qui n'accepte que
+RC4, un ticket RC4 est la norme, et chaque accès légitime au service en produit un
+identique.
 
 La chaîne est donc complète : un compte ordinaire du domaine, un ticket demandé, un
 mot de passe cassé hors ligne — et l'attaquant détient un membre de `Domain Admins`
@@ -145,7 +148,12 @@ confier la rotation à un coffre-fort à secrets.
 Pour `svc-backup`, sans attendre ces arbitrages : retirer le SPN s'il ne correspond
 plus à un service en exploitation. S'il est utilisé, restreindre le compte à AES
 (`msDS-SupportedEncryptionTypes = 0x18`), puis réinitialiser son mot de passe avec
-une valeur aléatoire d'au moins 25 caractères, ce qui génère ses clés AES.
+une valeur aléatoire d'au moins 25 caractères, ce qui génère ses clés AES. Cette
+bascule rend aussi l'attaque détectable : une fois le compte passé en AES, ses
+tickets légitimes sont chiffrés en AES, et une demande de ticket RC4 à son nom
+devient une anomalie. Une alerte sur l'événement 4769 portant le type de chiffrement
+`0x17` (RC4) pour ce compte n'a de sens qu'après la bascule : avant, elle se
+déclencherait sur chaque accès légitime.
 
 **Effort estimé** : de quelques heures pour une désactivation à plusieurs jours
 par compte lorsqu'une dépendance applicative doit être identifiée et testée.
@@ -238,13 +246,15 @@ Le chiffrement accepté fixe le coût de l'attaque :
   F-01.
 - **`svc-default`** n'a pas l'attribut renseigné. Le contrôleur applique alors sa
   valeur par défaut, qui dépend de sa configuration (`DefaultDomainSupportedEncTypes`)
-  et de son niveau de correctifs et peut inclure RC4. C'est le cas le plus fréquent en
-  production. Faute de lecture de cette configuration, le compte est classé comme
-  exposé à RC4.
+  et de son niveau de correctifs. C'est le cas le plus fréquent en production. Sur le
+  contrôleur du laboratoire, à jour de ses correctifs, un client standard a reçu un
+  ticket AES256. Le compte reste classé comme exposé à RC4 : ce résultat vaut pour ce
+  contrôleur, pas pour ceux d'un autre domaine (voir section 5).
 - **`svc-mixed`** accepte RC4 et AES : AES a été ajouté, RC4 n'a jamais été retiré, la
-  marque d'une migration inachevée. Un attaquant peut demander un ticket en RC4
-  seulement. Le classement en Moyen considère qu'il l'obtient, ce qui n'a pas été
-  vérifié dans ce laboratoire (voir section 5).
+  marque d'une migration inachevée. Un client standard a reçu un ticket AES256. Mais
+  le compte déclare toujours RC4, et un attaquant peut demander un ticket en RC4
+  seulement. Ce cas n'a pas été testé ; le classement en Moyen considère qu'il obtient
+  ce ticket (voir section 5).
 - **`svc-modern`** n'accepte qu'AES. Le ticket reste obtenable, mais la clé est dérivée
   du mot de passe par 4 096 itérations salées, ce qui ralentit le cassage de plusieurs
   ordres de grandeur. Seul un mot de passe faible tombe encore, d'où la sévérité
@@ -317,12 +327,16 @@ délégation contrainte avec transition de protocole et délégation basée sur 
 ressources sont hors du périmètre de l'outillage actuel. Cette couverture est prévue
 dans une itération ultérieure.
 
-**L'exposition RC4 de `svc-mixed` et `svc-default` est déduite, non observée.**
-L'audit se limite à la lecture d'attributs, sans demande de ticket. Que le contrôleur
-délivre un ticket RC4 pour un compte configuré en RC4 et AES (`0x1C`) n'a pas été
-vérifié. Pour `svc-default`, la valeur par défaut des contrôleurs n'a pas été lue.
-Les deux comptes sont classés de manière prudente ; la vérification consiste à
-demander leur ticket et à en lire le type de chiffrement.
+**L'exposition RC4 de `svc-mixed` et `svc-default` n'est que partiellement
+mesurée.** Des tickets de service ont été demandés pour les cinq comptes avec un
+client Windows standard (`klist get`), et leur type de chiffrement a été recoupé avec
+les événements 4769 du contrôleur. `svc-backup` et `svc-web` reçoivent un ticket RC4
+(`0x17`). `svc-mixed`, `svc-default` et `svc-modern` reçoivent un ticket AES256
+(`0x12`). Deux cas restent non testés. D'abord, un client qui ne demande que RC4 :
+c'est ce que ferait un attaquant contre `svc-mixed`, qui déclare toujours RC4.
+Ensuite, d'autres contrôleurs : le traitement de `svc-default` dépend de la
+configuration et du niveau de correctifs de chaque contrôleur, et un seul a été
+observé. Le classement prudent des deux comptes est donc conservé.
 
 **Le domaine ne comporte qu'un contrôleur.** Aucun écart de réplication n'est donc
 observable, et le mode `-AccurateMode` de `Get-InactiveUsers.ps1` n'apporte rien
