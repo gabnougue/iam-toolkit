@@ -424,6 +424,10 @@ nested group is rarely the same team that owns DA.
   `via Domain Admins` (1) on `Administrators`; `labadmin` reads `Direct` (1) on
   `Domain Admins`.
 
+  The clearest example of the column is `labadmin` on `Administrators` (also expected,
+  not yet measured): `Direct; via Domain Admins; via Enterprise Admins`, `PathCount = 3`.
+  One account, one row, three memberships to remove before the privilege is gone.
+
   `PathCount = 2` is the remediation signal: removing `jadams` from DA alone leaves the
   privilege in place through `GG-IT-Admins`, and the next audit shows the same row as
   `Nested`. Every path has to be cut.
@@ -786,7 +790,8 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
    the Built-in `Administrators` group). `svc-sql` should appear
    `Direct, Backup Operators`, with the path via `GG-Backup-Operators-Team` kept in
    `MembershipPaths` (see Scenarios 9 and 11 for the expected path values, not yet
-   measured). The built-in `Administrator` user
+   measured). `labadmin` on `Administrators` should read `PathCount = 3`
+   (`Direct; via Domain Admins; via Enterprise Admins`). The built-in `Administrator` user
    appears across `Domain Admins`, `Enterprise Admins`, `Schema Admins`, and
    `Administrators`. Total ≈ 16 rows.
 4. **None of the disabled users** (`jsmith`, `rpark`, `wlegacy`) should appear in any

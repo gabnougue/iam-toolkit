@@ -126,6 +126,17 @@
       Administrators group at provisioning time. This is normal AD architecture, not a
       finding - expect rows showing Domain Admins members as Nested in Administrators.
 
+    Known limitation - primary group membership is not walked:
+      The walk reads the `member` attribute. AD does not list in `member` the
+      principals whose PRIMARY group (primaryGroupID) is the group itself: that
+      membership is implicit, derived from primaryGroupID = RID of the group. An
+      account whose primary group were set to Domain Admins (RID 512) would hold
+      the privilege and appear on no path, and therefore in no row of this report.
+      Rare - the default primary group is Domain Users (513) - but a known way to
+      hide a privileged membership from tools that read `member` only. Possible
+      future improvement: also list the accounts whose primaryGroupID equals the
+      RID of each audited group. Not implemented.
+
     Known LDAP limitation:
       The `member` attribute is range-limited by AD to 5000 values per fetch. Privileged
       groups with more than 5000 direct members would be silently truncated. In practice
@@ -156,6 +167,21 @@
         $root.SetInfo()
       After the task completes (seconds to minutes), adminCount is set on every
       current member of the protected groups.
+
+    Validation status - all-paths walk written without a DC (November 2026):
+      The last lab run (lab.local, 27-Nov-2026) used the previous walk (run-wide
+      visited set, rows collapsed after the walk). The rewrite - path-scoped cycle
+      guard, per-run caches, aggregation per leaf DN - has never run.
+      VERIFY-ON-FIRST-RUN - non-regression, before looking at the new columns: the
+      new output must contain exactly the same 16 rows as
+      outputs/sample-results/privileged-users.csv of 27-Nov-2026, compared on
+      SamAccountName, GroupName, MembershipType and AdminCount:
+        $key = { '{0}|{1}|{2}|{3}' -f $_.SamAccountName, $_.GroupName, $_.MembershipType, $_.AdminCount }
+        $old = Import-Csv .\outputs\sample-results\privileged-users.csv | ForEach-Object $key
+        $new = Import-Csv .\outputs\privileged.csv                         | ForEach-Object $key
+        Compare-Object $old $new     # must return nothing; both counts must be 16
+      Then check MembershipPaths / PathCount against lab/lab-scenarios.md
+      (scenarios 9 and 11, validation check 3).
 
     Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and read access to
     the directory.
