@@ -360,8 +360,10 @@ This lets you iterate on the seed script or detection scripts without rebuilding
 From an elevated PowerShell prompt on the DC:
 
 ```powershell
-# Install git if not already present (no winget on Azure images:
-# see "Azure for Students subscriptions" above)
+# Install git if not already present.
+# Local hypervisor (Windows Server installed from the ISO): winget, below.
+# Azure VM: winget is absent from the image - skip this line and use the GitHub
+# releases API method in "Azure for Students subscriptions" above.
 winget install --id Git.Git -e --source winget
 
 # Clone the toolkit
