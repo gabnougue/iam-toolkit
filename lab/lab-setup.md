@@ -130,19 +130,8 @@ constraints that change several of them:
 - **Auto-shutdown cannot be deployed** in these regions. Nothing stops the VM for
   you: **deallocate it by hand** from the portal at the end of every session (see
   *Cost hygiene* above). The student credit is the only budget.
-- **winget is absent from the image**, so the `winget` line of Step 9 fails. Install
-  Git from the latest Git for Windows release, through the GitHub releases API:
-
-  ```powershell
-  $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest'
-  $asset   = $release.assets | Where-Object { $_.name -match '^Git-[\d.]+-64-bit\.exe$' } |
-             Select-Object -First 1
-  $setup   = Join-Path $env:TEMP $asset.name
-  Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $setup -UseBasicParsing
-  Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/NORESTART' -Wait
-  $env:Path += ';C:\Program Files\Git\cmd'   # current session; new sessions pick it up
-  git --version
-  ```
+- **winget is absent from the image** (as on any Windows Server 2022). Step 9
+  installs Git through the GitHub releases API, which works here unchanged.
 
 Rejoin the guide at **Step 5 — Install the Active Directory Domain Services role**.
 
@@ -360,11 +349,16 @@ This lets you iterate on the seed script or detection scripts without rebuilding
 From an elevated PowerShell prompt on the DC:
 
 ```powershell
-# Install git if not already present.
-# Local hypervisor (Windows Server installed from the ISO): winget, below.
-# Azure VM: winget is absent from the image - skip this line and use the GitHub
-# releases API method in "Azure for Students subscriptions" above.
-winget install --id Git.Git -e --source winget
+# Install Git if not already present, from the latest Git for Windows release
+# (GitHub releases API). Works on a local hypervisor and on Azure alike.
+$release = Invoke-RestMethod -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest'
+$asset   = $release.assets | Where-Object { $_.name -match '^Git-[\d.]+-64-bit\.exe$' } |
+           Select-Object -First 1
+$setup   = Join-Path $env:TEMP $asset.name
+Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $setup -UseBasicParsing
+Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/NORESTART' -Wait
+$env:Path += ';C:\Program Files\Git\cmd'   # current session; new sessions pick it up
+git --version
 
 # Clone the toolkit
 cd C:\
@@ -374,6 +368,10 @@ cd iam-toolkit
 # Run the seed
 .\lab\seed-test-users.ps1
 ```
+
+Windows Server 2022, the version this guide recommends, does not ship winget. On
+Windows Server 2025, which does, `winget install --id Git.Git -e --source winget`
+replaces the Git block above.
 
 Expected output: an upfront advisory that `lastLogonTimestamp` / `pwdLastSet` cannot
 be backdated via LDAP (this is expected; see the seed's `.NOTES`), then a summary
