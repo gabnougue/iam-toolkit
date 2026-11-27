@@ -262,8 +262,9 @@ function Set-LabServiceAccountKerberos {
     )
 
     try {
-        # VERIFY-ON-FIRST-RUN: the hyphenated attribute name is accepted by
-        # -Properties and comes back as $null when absent, an integer when set.
+        # Verified on lab.local, 27-Nov-2026: the hyphenated attribute name is
+        # accepted by -Properties and comes back as $null when absent, an integer
+        # when set.
         $u = Get-ADUser -Identity $Sam -Properties servicePrincipalName, $ENCTYPES_ATTR -ErrorAction Stop
     }
     catch {
@@ -299,7 +300,8 @@ function Set-LabServiceAccountKerberos {
 
     if (-not $spnInSync) {
         try {
-            # VERIFY-ON-FIRST-RUN: SPN written through the attribute, not setspn.exe.
+            # SPN written through the attribute, not setspn.exe.
+            # Verified on lab.local, 27-Nov-2026.
             Set-ADUser -Identity $u -Replace @{ servicePrincipalName = [string[]]$ServicePrincipalNames } -ErrorAction Stop
         }
         catch {
@@ -310,8 +312,9 @@ function Set-LabServiceAccountKerberos {
 
     if (-not $encInSync) {
         try {
-            # VERIFY-ON-FIRST-RUN: Replace with an int and Clear on the hyphenated
-            # attribute; re-run the seed and confirm KerberosConfigUpdated = 0.
+            # Replace with an int and Clear on the hyphenated attribute.
+            # Verified on lab.local, 27-Nov-2026: first run KerberosConfigUpdated = 5,
+            # second run KerberosConfigUpdated = 0.
             if ($null -eq $SupportedEncryptionTypes) {
                 Set-ADUser -Identity $u -Clear $ENCTYPES_ATTR -ErrorAction Stop
             }

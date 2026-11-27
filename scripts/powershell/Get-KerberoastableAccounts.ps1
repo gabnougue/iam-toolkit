@@ -183,27 +183,28 @@
          characters) so AES keys are regenerated, and remove privileged group
          membership in favour of narrowly delegated rights.
 
-    Validation status - written blind, NOT yet run against a real directory:
-      The original lab.local VM no longer exists: the free Azure credit expired on
-      13 September 2026 and the VM was deleted afterwards. The lab is to be
-      rebuilt on an Azure for Students subscription, from the repo's lab
-      procedure (lab/lab-setup.md), before the first run. This script was
-      written in November 2026 with no DC available. Every line tagged
-      VERIFY-ON-FIRST-RUN in the code must be checked on the first run (grep for
-      the tag). In particular:
-        1. msDS-SupportedEncryptionTypes retrieval and decoding - the most likely
-           point of failure (hyphenated LDAP name as a property, null vs 0, value
-           type returned by the AD module).
-        2. Enabled and PasswordLastSet are requested by name: the 26-Aug-2026 run
-           showed the AD module does not derive friendly properties from raw ones.
-        3. krbtgt / krbtgt_<n> exclusion on a domain that has an RODC.
-        4. Against the current seed this script returns zero rows: svc-backup has
-           no SPN yet. The seed extension adds it - until then, set an SPN by hand
-           on a lab account to exercise the code path.
+    Validation status - first run against lab.local on 27-Nov-2026:
+      The lab was rebuilt on Azure for Students (single DC) from
+      lab/lab-setup.md and seeded with five kerberoastable service accounts.
+      The script returned the five expected rows, in the expected order and with
+      the expected severities (lab/lab-scenarios.md, scenario 15).
+      Verified:
+        1. msDS-SupportedEncryptionTypes retrieval and decoding: the hyphenated
+           name is accepted by -Properties; an absent attribute comes back as
+           $null (NotConfigured), a set one as an integer (4, 24, 28 decoded as
+           RC4, AES, RC4+AES). krbtgt carries the attribute with the value 0, not
+           absent - decoded as NotConfigured, and excluded anyway (point 3).
+        2. Enabled and PasswordLastSet are populated when requested by name.
+        3. krbtgt is excluded by RID 502, including under -IncludeDisabled. The
+           krbtgt_<n> clause was not exercised: the lab has no RODC.
+      Not yet verified - still tagged VERIFY-ON-FIRST-RUN:
         5. RC4+AES grading: set msDS-SupportedEncryptionTypes = 0x1C on a test
            account, request its ticket with impacket GetUserSPNs.py, and read the
            hash prefix ($krb5tgs$23$ = RC4, $krb5tgs$18$ = AES256) to confirm or
-           refute that a 0x1C account can still yield an RC4 ticket.
+           refute that a 0x1C account can still yield an RC4 ticket. Until then
+           RC4+AES stays graded as RC4-exposed (svc-mixed reads Medium).
+      (Point 4 of the pre-run checklist - zero rows against the unextended seed -
+      no longer applies: the seed now carries the SPN fixtures.)
 
     Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and read
     access to the directory. No privilege beyond an ordinary domain account is
@@ -250,8 +251,9 @@ $ENCTYPES_ATTR = 'msDS-SupportedEncryptionTypes'
 function ConvertTo-EncryptionTypeLabel {
     param([AllowNull()]$RawValue)
 
-    # VERIFY-ON-FIRST-RUN: confirm the AD module returns $null (not 0, not an empty
-    # collection) when the attribute is absent, and an [int] when it is set.
+    # Verified on lab.local, 27-Nov-2026: the AD module returns $null when the
+    # attribute is absent and an [int] when it is set. A value of 0 (krbtgt) has
+    # no cipher bit and falls through to NotConfigured below.
     if ($null -eq $RawValue) { return 'NotConfigured' }
 
     $mask = [int]$RawValue
@@ -283,8 +285,8 @@ if ($PSBoundParameters.ContainsKey('SearchBase')) { $adParams.SearchBase = $Sear
 
 # Calculated properties are requested by name: the AD module does not derive
 # PasswordLastSet from pwdLastSet on its own (26-Aug-2026 lab run).
-# VERIFY-ON-FIRST-RUN: the hyphenated attribute name is accepted by -Properties and
-# exposed as a property readable with $u.'msDS-SupportedEncryptionTypes'.
+# Verified on lab.local, 27-Nov-2026: the hyphenated attribute name is accepted by
+# -Properties and readable with $u.'msDS-SupportedEncryptionTypes'.
 $queryProps = @(
     'DisplayName', 'servicePrincipalName', $ENCTYPES_ATTR,
     'PasswordLastSet', 'adminCount', 'Enabled'
@@ -303,7 +305,8 @@ $now = Get-Date
 
 $rawRows = foreach ($u in $users) {
     # krbtgt (RID 502) and RODC krbtgt_<n>: system-managed random keys, not a target.
-    # VERIFY-ON-FIRST-RUN: check on a domain that has an RODC.
+    # RID 502 exclusion verified on lab.local, 27-Nov-2026 (-IncludeDisabled).
+    # The krbtgt_<n> clause has not been exercised: the lab has no RODC.
     if ($u.SID -and $u.SID.Value -match '-502$') { continue }
     if ($u.SamAccountName -like 'krbtgt_*')     { continue }
 
@@ -311,6 +314,8 @@ $rawRows = foreach ($u in $users) {
     $encLabel = ConvertTo-EncryptionTypeLabel -RawValue $rawEnc
 
     # Only AES-only accounts escape the RC4-exposed grading (see .NOTES)
+    # VERIFY-ON-FIRST-RUN: point 5 of the Validation status - confirm with a real
+    # ticket request whether a 0x1C (RC4+AES) account can still yield RC4.
     $rc4Exposed = $encLabel -ne 'AES'
     $privileged = ($u.adminCount -eq 1)
 
