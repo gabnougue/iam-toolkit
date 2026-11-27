@@ -107,6 +107,43 @@ Windows Server as the local admin.
   state and compute continues to bill.
 - Once deallocated, only storage is charged (a few euros / month for the OS disk).
 
+#### Azure for Students subscriptions
+
+The settings above were verified on a pay-as-you-go subscription. An **Azure for
+Students** subscription (on which the lab was rebuilt on 27 November 2026) adds
+constraints that change several of them:
+
+- **Region is imposed by policy.** The subscription only allows a short list of
+  regions. On the 27-Nov-2026 rebuild it was `spaincentral`, `polandcentral`,
+  `denmarkeast`, `austriaeast` and `norwayeast`, and **France Central was refused**.
+  The list can differ between tenants. If a deployment fails on a policy error,
+  read the allowed regions in the error details. The lab was rebuilt in
+  `spaincentral`.
+- **Quota is 0 on the v5 / v6 / v7 families**, `Standard_D2als_v7` included, so the
+  size recommended above cannot be deployed. Use **`Standard_B2s_v2`** (used for the
+  rebuild) or `Standard_B2as_v2`, both 2 vCPU / 8 GB.
+- **Zonal VMs can fail to start.** If the VM is pinned to an availability zone, a
+  later *Start* can fail for lack of capacity in that zone. At creation, set
+  *Availability options* to **No infrastructure redundancy required**. If an
+  existing zonal VM refuses to start, resize it to the other B-series size above
+  and retry.
+- **Auto-shutdown cannot be deployed** in these regions. Nothing stops the VM for
+  you: **deallocate it by hand** from the portal at the end of every session (see
+  *Cost hygiene* above). The student credit is the only budget.
+- **winget is absent from the image**, so the `winget` line of Step 9 fails. Install
+  Git from the latest Git for Windows release, through the GitHub releases API:
+
+  ```powershell
+  $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest'
+  $asset   = $release.assets | Where-Object { $_.name -match '^Git-[\d.]+-64-bit\.exe$' } |
+             Select-Object -First 1
+  $setup   = Join-Path $env:TEMP $asset.name
+  Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $setup -UseBasicParsing
+  Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/NORESTART' -Wait
+  $env:Path += ';C:\Program Files\Git\cmd'   # current session; new sessions pick it up
+  git --version
+  ```
+
 Rejoin the guide at **Step 5 — Install the Active Directory Domain Services role**.
 
 ---
@@ -323,7 +360,8 @@ This lets you iterate on the seed script or detection scripts without rebuilding
 From an elevated PowerShell prompt on the DC:
 
 ```powershell
-# Install git if not already present
+# Install git if not already present (no winget on Azure images:
+# see "Azure for Students subscriptions" above)
 winget install --id Git.Git -e --source winget
 
 # Clone the toolkit
@@ -341,8 +379,10 @@ block showing `UsersCreated = 35`, `OUsCreated = 6` (or `OUsExisting = 6` if you
 pre-created them in Step 7), `GroupsCreated = 5`, `MembershipsAdded = 15`, and
 zero warnings.
 
-Re-run the script to verify idempotency — all counters should report `Existing` /
-`Unchanged` on the second run.
+Re-run the script to verify idempotency. On the second run, the counters should
+report `Existing` / `Unchanged` and `KerberosConfigUpdated = 0`, with one exception
+by design: `UsersUpdated = 1` for `ptaylor`, whose change-password-at-next-logon flag
+is re-applied on every run (measured on 27 November 2026).
 
 ---
 
@@ -394,12 +434,9 @@ mkdir C:\iam-toolkit\outputs -Force
 .\scripts\powershell\Get-PasswordNeverExpires.ps1 -OutputPath .\outputs\pne.csv
 .\scripts\powershell\Get-KerberoastableAccounts.ps1 -OutputPath .\outputs\kerberoastable.csv
 
-# Sanity checks - 32 (inactive) and 5 (kerberoastable) are EXPECTED values after the
-# seed extension, to be confirmed on the first run; 16 (privileged) and 9 (pne) were
-# measured on 27 August and do not change with the extension (no new privileged or
-# PNE account).
+# Sanity checks - all four counts measured on the rebuilt lab, 27 November 2026.
 (Import-Csv .\outputs\inactive.csv).Count         # expect 32 — every enabled account. See NOTE below.
-(Import-Csv .\outputs\privileged.csv).Count       # expect ~16
+(Import-Csv .\outputs\privileged.csv).Count       # expect 16
 (Import-Csv .\outputs\pne.csv).Count              # expect 9
 (Import-Csv .\outputs\kerberoastable.csv).Count   # expect 5 - svc-backup Critical once SDProp has run (Step 10)
 ```
