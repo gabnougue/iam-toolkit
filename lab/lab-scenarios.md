@@ -636,11 +636,29 @@ reach (typically the application's data), hence Medium / Low rather than Critica
 `svc-backup`. Inside the Medium tier the password age is uniform in the lab, so the
 order falls to `SamAccountName`: `svc-default`, `svc-mixed`, `svc-web`.
 
-`svc-mixed` is the fixture for point 5 of the script's Validation status: whether the
-KDC still issues an RC4 ticket for a `0x1C` account when the client asks for RC4 only.
-`Medium / RC4+AES` is a conservative grading until that test is run. Likewise,
-`svc-default` is graded as RC4-exposed because the effective default depends on each
-DC's `DefaultDomainSupportedEncTypes` value and patch level.
+**Ticket types observed** (27-Nov-2026, defensive check: service tickets requested
+with `klist get` from a standard Windows client on the DC, cross-checked against the
+4769 events. `klist` and 4769 agree):
+
+| Account       | `msDS-SupportedEncryptionTypes` | Ticket issued        |
+|---------------|---------------------------------|----------------------|
+| `svc-backup`  | `0x04`                          | RC4 (`0x17`)         |
+| `svc-web`     | `0x04`                          | RC4 (`0x17`)         |
+| `svc-mixed`   | `0x1C`                          | AES256 (`0x12`)      |
+| `svc-default` | absent                          | AES256 (`0x12`)      |
+| `svc-modern`  | `0x18`                          | AES256 (`0x12`)      |
+
+The script's grading is unchanged by these results, deliberately.
+
+- `svc-mixed` is the fixture for point 5b of the script's Validation status. It
+  received AES256 because a standard client asks for AES first. Whether the KDC still
+  issues RC4 when the client asks for RC4 only (what an attacker would do) has not
+  been tested, so `Medium / RC4+AES` stays a conservative grading.
+- `svc-default` received AES256 from this DC (Windows Server 2022, fully patched).
+  The effective default depends on each DC's `DefaultDomainSupportedEncTypes` value
+  and patch level, so the account stays graded as RC4-exposed.
+- For the two RC4-only accounts, every legitimate ticket is `0x17`. An alert on 4769
+  with type `0x17` is only discriminating once the account has been moved to AES.
 
 **Remediation**: same order as Scenario 3 — remove SPNs nothing uses, migrate to a
 gMSA, otherwise set `0x18` and reset the password to a long random value so AES keys
