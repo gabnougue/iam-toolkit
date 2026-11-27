@@ -1,0 +1,6 @@
+"Severity","SamAccountName","DisplayName","ServicePrincipalName","EncryptionType","SupportedEncryptionTypesRaw","PasswordAge","PasswordLastSet","AdminCount","Enabled","OU","DistinguishedName"
+"Critical","svc-backup","svc-backup","MSSQLSvc/bkp-sql01.lab.local:1433","RC4","4","0","2026-11-27 12:08:02","1","True","OU=Service Accounts,DC=lab,DC=local","CN=svc-backup,OU=Service Accounts,DC=lab,DC=local"
+"Medium","svc-default","svc-default","HTTP/legacy-app.lab.local","NotConfigured",,"0","2026-11-27 12:08:03",,"True","OU=Service Accounts,DC=lab,DC=local","CN=svc-default,OU=Service Accounts,DC=lab,DC=local"
+"Medium","svc-mixed","svc-mixed","MSSQLSvc/app-sql01.lab.local:1433","RC4+AES","28","0","2026-11-27 12:08:03",,"True","OU=Service Accounts,DC=lab,DC=local","CN=svc-mixed,OU=Service Accounts,DC=lab,DC=local"
+"Medium","svc-web","svc-web","HTTP/intranet.lab.local","RC4","4","0","2026-11-27 12:08:03",,"True","OU=Service Accounts,DC=lab,DC=local","CN=svc-web,OU=Service Accounts,DC=lab,DC=local"
+"Low","svc-modern","svc-modern","HTTP/portal.lab.local","AES","24","0","2026-11-27 12:08:03",,"True","OU=Service Accounts,DC=lab,DC=local","CN=svc-modern,OU=Service Accounts,DC=lab,DC=local"
