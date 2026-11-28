@@ -382,8 +382,8 @@ zero warnings.
 Re-run the script to verify idempotency. On the second run, the counters should
 report `Existing` / `Unchanged`, `UsersUpdated = 0` and `KerberosConfigUpdated = 0`.
 The seed reads `ptaylor`'s change-password-at-next-logon flag back from `pwdLastSet`
-and no longer re-applies it. (Expected, not yet measured: the 27 November 2026 run,
-before this change, reported `UsersUpdated = 1` for `ptaylor`.)
+and no longer re-applies it. (Measured on 28 November 2026: `UsersUpdated = 0`. The
+27 November 2026 run, before this change, reported `UsersUpdated = 1` for `ptaylor`.)
 
 ---
 

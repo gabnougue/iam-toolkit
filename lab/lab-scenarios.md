@@ -410,8 +410,8 @@ nested group is rarely the same team that owns DA.
   `Direct` because `jadams` and `mlefevre` are also direct members of DA (lab quirk —
   production would usually show pure Nested). The nested path is no longer lost behind
   that `Direct`: the `MembershipPaths` column lists every path and `PathCount` counts
-  them. Expected values, **expected, not yet measured** (the column was added after the
-  27-Nov-2026 run):
+  them. Values **measured 28-Nov-2026** (the column was added after the 27-Nov-2026 run;
+  the 16 rows are unchanged):
 
   | Account    | GroupName        | MembershipPaths                                     | PathCount |
   |------------|------------------|-----------------------------------------------------|:---------:|
@@ -424,8 +424,8 @@ nested group is rarely the same team that owns DA.
   `via Domain Admins` (1) on `Administrators`; `labadmin` reads `Direct` (1) on
   `Domain Admins`.
 
-  The clearest example of the column is `labadmin` on `Administrators` (also expected,
-  not yet measured): `Direct; via Domain Admins; via Enterprise Admins`, `PathCount = 3`.
+  The clearest example of the column is `labadmin` on `Administrators` (measured
+  28-Nov-2026): `Direct; via Domain Admins; via Enterprise Admins`, `PathCount = 3`.
   One account, one row, three memberships to remove before the privilege is gone.
 
   `PathCount = 2` is the remediation signal: removing `jadams` from DA alone leaves the
@@ -495,7 +495,7 @@ one group; they have to walk into the group to see the actual accounts.
 - `Get-PrivilegedUsers.ps1` → one row `svc-sql, Backup Operators`, `MembershipType =
   Direct` (in this lab `svc-sql` is both a direct and a nested member). The intermediate
   group no longer has to be found by inspecting `Backup Operators` by hand: the row
-  carries both paths. **Expected, not yet measured**:
+  carries both paths. **Measured 28-Nov-2026**:
   `MembershipPaths = Direct; via GG-Backup-Operators-Team`, `PathCount = 2`. Removing
   the direct membership alone would leave `svc-sql` in `Backup Operators` through the
   team group.
@@ -789,8 +789,8 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
    again as `Nested, Administrators` (via the default nesting of Domain Admins in
    the Built-in `Administrators` group). `svc-sql` should appear
    `Direct, Backup Operators`, with the path via `GG-Backup-Operators-Team` kept in
-   `MembershipPaths` (see Scenarios 9 and 11 for the expected path values, not yet
-   measured). `labadmin` on `Administrators` should read `PathCount = 3`
+   `MembershipPaths` (see Scenarios 9 and 11 for the path values, measured
+   28-Nov-2026). `labadmin` on `Administrators` should read `PathCount = 3`
    (`Direct; via Domain Admins; via Enterprise Admins`). The built-in `Administrator` user
    appears across `Domain Admins`, `Enterprise Admins`, `Schema Admins`, and
    `Administrators`. Total ≈ 16 rows.
