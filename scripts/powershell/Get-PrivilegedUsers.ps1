@@ -168,20 +168,25 @@
       After the task completes (seconds to minutes), adminCount is set on every
       current member of the protected groups.
 
-    Validation status - all-paths walk written without a DC (November 2026):
-      The last lab run (lab.local, 27-Nov-2026) used the previous walk (run-wide
-      visited set, rows collapsed after the walk). The rewrite - path-scoped cycle
-      guard, per-run caches, aggregation per leaf DN - has never run.
-      VERIFY-ON-FIRST-RUN - non-regression, before looking at the new columns: the
-      new output must contain exactly the same 16 rows as
-      outputs/sample-results/privileged-users.csv of 27-Nov-2026, compared on
-      SamAccountName, GroupName, MembershipType and AdminCount:
-        $key = { '{0}|{1}|{2}|{3}' -f $_.SamAccountName, $_.GroupName, $_.MembershipType, $_.AdminCount }
-        $old = Import-Csv .\outputs\sample-results\privileged-users.csv | ForEach-Object $key
-        $new = Import-Csv .\outputs\privileged.csv                         | ForEach-Object $key
-        Compare-Object $old $new     # must return nothing; both counts must be 16
-      Then check MembershipPaths / PathCount against lab/lab-scenarios.md
-      (scenarios 9 and 11, validation check 3).
+    Validation status - all-paths walk, verified on lab.local, 28-Nov-2026:
+      The rewrite (path-scoped cycle guard, per-run caches, aggregation per leaf
+      DN) was written without a DC in November 2026, then run on the rebuilt lab.
+        1. Non-regression: the output holds exactly the same 16 rows as the
+           previous walk's run of 27-Nov-2026, compared on SamAccountName,
+           GroupName, MembershipType and AdminCount (Compare-Object returned
+           nothing). Re-run this check after any change to the walk:
+             $key = { '{0}|{1}|{2}|{3}' -f $_.SamAccountName, $_.GroupName, $_.MembershipType, $_.AdminCount }
+             $old = Import-Csv .\outputs\sample-results\privileged-users.csv | ForEach-Object $key
+             $new = Import-Csv .\outputs\privileged.csv                         | ForEach-Object $key
+             Compare-Object $old $new     # must return nothing; both counts must be 16
+        2. MembershipPaths / PathCount match every value in lab/lab-scenarios.md
+           (scenarios 9 and 11, validation check 3), including labadmin on
+           Administrators: Direct; via Domain Admins; via Enterprise Admins (3).
+        3. Path order holds on PowerShell 5.1: Direct first, then fewest
+           segments (jadams / Administrators).
+      Not exercised by the lab: the "... (+N)" cap and the visit budget (no
+      principal has more than 3 paths), and Foreign Security Principals (no
+      trust).
 
     Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and read access to
     the directory.
@@ -410,9 +415,8 @@ $results = foreach ($groupName in $Groups) {
         Truncated = $false
     }
 
-    # VERIFY-ON-FIRST-RUN: all-paths walk never run against a DC. On lab.local,
-    # confirm the row count stays 16 and MembershipPaths / PathCount match
-    # lab/lab-scenarios.md (scenarios 9 and 11).
+    # Verified on lab.local, 28-Nov-2026: 16 rows, identical to the previous walk;
+    # MembershipPaths / PathCount match lab/lab-scenarios.md (scenarios 9 and 11).
     Resolve-GroupMembership `
         -CurrentGroupDN $group.DistinguishedName `
         -PathNames      @() `
@@ -431,8 +435,8 @@ $results = foreach ($groupName in $Groups) {
     # One row per (principal, audited group): the row count is unchanged by the
     # path enumeration, only the two path columns are added.
     foreach ($leaf in $state.Leaves.Values) {
-        # VERIFY-ON-FIRST-RUN: Sort-Object with scriptblock keys on PowerShell 5.1 -
-        # check the order of the paths on jadams / Administrators.
+        # Verified on lab.local, 28-Nov-2026 (PowerShell 5.1): Direct first, then
+        # fewest segments - see jadams / Administrators.
         $paths  = @($leaf.Paths | Sort-Object -Property $pathSortKeys)
         $listed = @($paths | Select-Object -First $MAX_LISTED_PATHS)
         $text   = $listed -join '; '

@@ -410,9 +410,9 @@ function New-LabUser {
         # is an Int64 FileTime: compare it as [Int64], never as a date. A missing
         # value is treated as "not set", so the flag is re-applied rather than
         # silently skipped.
-        # VERIFY-ON-FIRST-RUN: confirm -Properties pwdLastSet returns the raw Int64
-        # (0 for ptaylor after the first run), and that the second run reports
-        # UsersUpdated = 0.
+        # Verified on lab.local, 28-Nov-2026: -Properties pwdLastSet returns the raw
+        # Int64, and the second run reports UsersUpdated = 0 (ptaylor no longer
+        # re-applied).
         $currentMustChange = ($null -ne $existing.pwdLastSet) -and ([Int64]$existing.pwdLastSet -eq 0)
 
         $updateParams = @{}
