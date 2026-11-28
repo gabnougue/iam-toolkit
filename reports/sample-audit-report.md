@@ -143,7 +143,10 @@ l'application le permet : le mot de passe est alors généré, détenu et renouv
 par Active Directory, sans intervention humaine. À défaut, remplacer
 l'appartenance au groupe d'administration par la délégation la plus restreinte
 qui permette le fonctionnement, retirer le drapeau `PasswordNeverExpires`, et
-confier la rotation à un coffre-fort à secrets.
+confier la rotation à un coffre-fort à secrets. Pour `svc-sql`, le retrait doit
+couper les deux chemins relevés (`MembershipPaths = Direct; via
+GG-Backup-Operators-Team`) : retirer seulement l'appartenance directe laisse le
+compte dans `Backup Operators` par le groupe d'équipe.
 
 Pour `svc-backup`, sans attendre ces arbitrages : retirer le SPN s'il ne correspond
 plus à un service en exploitation. S'il est utilisé, restreindre le compte à AES
