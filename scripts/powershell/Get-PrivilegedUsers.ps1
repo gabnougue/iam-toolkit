@@ -16,10 +16,14 @@
     Schema Admins and Enterprise Admins live only in the forest root domain; queries from
     a child domain are reported as warnings and skipped, not fatal errors.
 
-    A visited-DN HashSet prevents infinite loops in case of malformed group nesting cycles.
+    Every path from the audited group down to the principal is enumerated. The report
+    keeps one row per (principal, audited group); MembershipType is Direct when at least
+    one path is direct, Nested otherwise. All the paths are listed in MembershipPaths
+    and counted in PathCount - see .NOTES before remediating.
 
-    When a principal is reachable through both a Direct and a Nested path to the same
-    target group, the row is collapsed and tagged Direct (the higher-visibility path).
+    Nesting cycles are guarded per path: a group already on the current path is not
+    re-entered, while a group reached through a different path is walked again (that
+    is a second path, not a cycle).
 
 .PARAMETER Groups
     Names of the sensitive groups to audit. Defaults to 13 groups across three scopes:
@@ -99,10 +103,39 @@
       lastLogonTimestamp (referenced indirectly via member objects) replicates with up to
       14-day delay. The membership data itself replicates promptly within a domain.
 
+    MembershipPaths and PathCount - read this before remediating:
+      A principal can hold a privileged membership through several paths at once:
+      directly, and through one or more nested groups. MembershipType alone shows
+      only "Direct" in that case, and the nested path disappears from the report.
+      MembershipPaths lists every path, separated by "; ":
+        Direct                     the principal is a direct member of the group
+        via A > B                  A is a direct member of the audited group, B a
+                                   member of A, ... and the principal is a direct
+                                   member of the last group named
+      Example: "Direct; via GG-IT-Admins" on jadams / Domain Admins.
+      PathCount is the total number of paths. Remediation must cut ALL of them:
+      removing the direct membership while the account stays in GG-IT-Admins leaves
+      the privilege in place, and the next audit reports the same row as Nested.
+      Group nesting can make the path count explode. At most 10 paths are written
+      out; the rest is summarised as "... (+N)", and PathCount keeps the full count.
+      Past 10000 group visits for one audited group, enumeration stops with a
+      warning and PathCount is a lower bound for that group's rows.
+
     Default nesting in AD:
       Domain Admins and Enterprise Admins are themselves Direct members of the Built-in
       Administrators group at provisioning time. This is normal AD architecture, not a
       finding - expect rows showing Domain Admins members as Nested in Administrators.
+
+    Known limitation - primary group membership is not walked:
+      The walk reads the `member` attribute. AD does not list in `member` the
+      principals whose PRIMARY group (primaryGroupID) is the group itself: that
+      membership is implicit, derived from primaryGroupID = RID of the group. An
+      account whose primary group were set to Domain Admins (RID 512) would hold
+      the privilege and appear on no path, and therefore in no row of this report.
+      Rare - the default primary group is Domain Users (513) - but a known way to
+      hide a privileged membership from tools that read `member` only. Possible
+      future improvement: also list the accounts whose primaryGroupID equals the
+      RID of each audited group. Not implemented.
 
     Known LDAP limitation:
       The `member` attribute is range-limited by AD to 5000 values per fetch. Privileged
@@ -134,6 +167,26 @@
         $root.SetInfo()
       After the task completes (seconds to minutes), adminCount is set on every
       current member of the protected groups.
+
+    Validation status - all-paths walk, verified on lab.local, 28-Nov-2026:
+      The rewrite (path-scoped cycle guard, per-run caches, aggregation per leaf
+      DN) was written without a DC in November 2026, then run on the rebuilt lab.
+        1. Non-regression: the output holds exactly the same 16 rows as the
+           previous walk's run of 27-Nov-2026, compared on SamAccountName,
+           GroupName, MembershipType and AdminCount (Compare-Object returned
+           nothing). Re-run this check after any change to the walk:
+             $key = { '{0}|{1}|{2}|{3}' -f $_.SamAccountName, $_.GroupName, $_.MembershipType, $_.AdminCount }
+             $old = Import-Csv .\outputs\sample-results\privileged-users.csv | ForEach-Object $key
+             $new = Import-Csv .\outputs\privileged.csv                         | ForEach-Object $key
+             Compare-Object $old $new     # must return nothing; both counts must be 16
+        2. MembershipPaths / PathCount match every value in lab/lab-scenarios.md
+           (scenarios 9 and 11, validation check 3), including labadmin on
+           Administrators: Direct; via Domain Admins; via Enterprise Admins (3).
+        3. Path order holds on PowerShell 5.1: Direct first, then fewest
+           segments (jadams / Administrators).
+      Not exercised by the lab: the "... (+N)" cap and the visit budget (no
+      principal has more than 3 paths), and Foreign Security Principals (no
+      trust).
 
     Requires the ActiveDirectory PowerShell module (RSAT-AD-PowerShell) and read access to
     the directory.
@@ -182,12 +235,62 @@ if ($PSBoundParameters.ContainsKey('Server')) { $adCommonParams.Server = $Server
 # UserAccountControl bit 0x2 = ACCOUNTDISABLE
 $ACCOUNTDISABLE = 0x2
 
+# MembershipPaths: number of paths written out per (principal, group) row; the
+# rest is summarised as "... (+N)". PathCount always carries the full count.
+$MAX_LISTED_PATHS = 10
+
+# Path enumeration budget per audited group, counted in group visits. All-paths
+# enumeration is exponential on pathological nesting (many groups nesting each
+# other in layers); past this budget the walk stops and warns, and PathCount
+# becomes a lower bound for that group.
+$MAX_GROUP_VISITS = 10000
+
+# Per-run caches keyed by DN. A sub-group reached by several paths, or nested under
+# several audited groups (Domain Admins under Administrators), is fetched once.
+$script:groupMemberCache = @{}   # group DN  -> member DNs (empty if the fetch failed)
+$script:objectCache      = @{}   # member DN -> AD object ($null if resolution failed)
+
+function Get-CachedGroupMember {
+    param([Parameter(Mandatory)][string]$GroupDN)
+
+    if (-not $script:groupMemberCache.ContainsKey($GroupDN)) {
+        try {
+            $g = Get-ADGroup -Identity $GroupDN -Properties member @adCommonParams
+            $script:groupMemberCache[$GroupDN] = @($g.member)
+        }
+        catch {
+            Write-Warning "Failed to enumerate group '$GroupDN': $($_.Exception.Message)"
+            $script:groupMemberCache[$GroupDN] = @()
+        }
+    }
+    $script:groupMemberCache[$GroupDN]
+}
+
+function Get-CachedADObject {
+    param([Parameter(Mandatory)][string]$DN)
+
+    if (-not $script:objectCache.ContainsKey($DN)) {
+        try {
+            $script:objectCache[$DN] = Get-ADObject -Identity $DN `
+                -Properties objectClass, sAMAccountName, displayName, userAccountControl, adminCount `
+                @adCommonParams
+        }
+        catch {
+            Write-Warning "Failed to resolve member '$DN': $($_.Exception.Message)"
+            $script:objectCache[$DN] = $null
+        }
+    }
+    $script:objectCache[$DN]
+}
+
 function ConvertTo-PrivilegedRow {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$AdObject,
         [Parameter(Mandatory)][string]$TargetGroupName,
-        [Parameter(Mandatory)][bool]$IsDirect
+        [Parameter(Mandatory)][bool]$IsDirect,
+        [Parameter(Mandatory)][string]$MembershipPaths,
+        [Parameter(Mandatory)][int]$PathCount
     )
 
     $type = if ($IsDirect) { 'Direct' } else { 'Nested' }
@@ -200,6 +303,8 @@ function ConvertTo-PrivilegedRow {
             DisplayName       = '(foreign security principal)'
             GroupName         = $TargetGroupName
             MembershipType    = $type
+            MembershipPaths   = $MembershipPaths
+            PathCount         = $PathCount
             ObjectClass       = 'foreignSecurityPrincipal'
             Enabled           = $null
             AdminCount        = $null
@@ -215,6 +320,8 @@ function ConvertTo-PrivilegedRow {
         DisplayName       = $AdObject.displayName
         GroupName         = $TargetGroupName
         MembershipType    = $type
+        MembershipPaths   = $MembershipPaths
+        PathCount         = $PathCount
         ObjectClass       = $AdObject.objectClass
         Enabled           = $enabled
         AdminCount        = $AdObject.adminCount
@@ -223,54 +330,77 @@ function ConvertTo-PrivilegedRow {
 }
 
 function Resolve-GroupMembership {
+    # Enumerates every path from the audited group down to each leaf principal and
+    # records it in $State.Leaves (leaf DN -> object + list of path strings).
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$TargetGroupName,
         [Parameter(Mandatory)][string]$CurrentGroupDN,
-        [Parameter(Mandatory)][bool]$IsRoot,
-        # The first call always passes an empty HashSet; PowerShell's Mandatory
-        # validation on typed collections rejects that unless AllowEmptyCollection is set.
+        # Names of the groups crossed so far, from the audited group's direct member
+        # down to the current group. Empty for the audited group itself.
         [Parameter(Mandatory)]
         [AllowEmptyCollection()]
-        [System.Collections.Generic.HashSet[string]]$VisitedGroups
+        [string[]]$PathNames,
+        # Groups on the CURRENT path only. The first call passes an empty HashSet;
+        # Mandatory validation on typed collections rejects that unless
+        # AllowEmptyCollection is set.
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.HashSet[string]]$Ancestors,
+        [Parameter(Mandatory)]$State
     )
 
-    # Cycle guard: AD prevents cycles in well-formed environments, but defend regardless
-    if (-not $VisitedGroups.Add($CurrentGroupDN)) { return }
-
-    try {
-        $group = Get-ADGroup -Identity $CurrentGroupDN -Properties member @adCommonParams
-    }
-    catch {
-        Write-Warning "Failed to enumerate group '$CurrentGroupDN': $($_.Exception.Message)"
+    if ($State.Visits -ge $MAX_GROUP_VISITS) {
+        $State.Truncated = $true
         return
     }
+    $State.Visits++
 
-    foreach ($memberDN in $group.member) {
-        try {
-            $obj = Get-ADObject -Identity $memberDN `
-                -Properties objectClass, sAMAccountName, displayName, userAccountControl, adminCount `
-                @adCommonParams
-        }
-        catch {
-            Write-Warning "Failed to resolve member '$memberDN': $($_.Exception.Message)"
-            continue
-        }
+    # Cycle guard, path-scoped: a group already on the current path closes a cycle
+    # and is not re-entered. A group reached again through a DIFFERENT path is a
+    # second, legitimate path and is walked again - a run-wide visited set would
+    # drop exactly the paths this column exists to show.
+    if (-not $Ancestors.Add($CurrentGroupDN)) { return }
 
-        if ($obj.objectClass -eq 'group') {
-            Resolve-GroupMembership `
-                -TargetGroupName $TargetGroupName `
-                -CurrentGroupDN  $memberDN `
-                -IsRoot          $false `
-                -VisitedGroups   $VisitedGroups
+    try {
+        foreach ($memberDN in (Get-CachedGroupMember -GroupDN $CurrentGroupDN)) {
+            $obj = Get-CachedADObject -DN $memberDN
+            if ($null -eq $obj) { continue }
+
+            if ($obj.objectClass -eq 'group') {
+                Resolve-GroupMembership `
+                    -CurrentGroupDN $memberDN `
+                    -PathNames      ($PathNames + [string]$obj.Name) `
+                    -Ancestors      $Ancestors `
+                    -State          $State
+            }
+            else {
+                $path = if ($PathNames.Count -eq 0) { 'Direct' }
+                        else { 'via ' + ($PathNames -join ' > ') }
+                $key = [string]$obj.DistinguishedName
+                if (-not $State.Leaves.ContainsKey($key)) {
+                    $State.Leaves[$key] = @{
+                        Object = $obj
+                        Paths  = [System.Collections.Generic.List[string]]::new()
+                    }
+                }
+                $State.Leaves[$key].Paths.Add($path)
+            }
         }
-        else {
-            ConvertTo-PrivilegedRow -AdObject $obj -TargetGroupName $TargetGroupName -IsDirect $IsRoot
-        }
+    }
+    finally {
+        [void]$Ancestors.Remove($CurrentGroupDN)
     }
 }
 
-$rawResults = foreach ($groupName in $Groups) {
+# Path order inside MembershipPaths: Direct first, then shortest nesting first,
+# then alphabetical - deterministic, and the path to cut first reads first.
+$pathSortKeys = @(
+    @{ Expression = { if ($_ -eq 'Direct') { 0 } else { 1 } } }
+    @{ Expression = { @($_ -split ' > ').Count } }
+    @{ Expression = { $_ } }
+)
+
+$results = foreach ($groupName in $Groups) {
     try {
         $group = Get-ADGroup -Identity $groupName @adCommonParams
     }
@@ -279,41 +409,51 @@ $rawResults = foreach ($groupName in $Groups) {
         continue
     }
 
-    $visited = [System.Collections.Generic.HashSet[string]]::new()
-    $groupRows = @(Resolve-GroupMembership `
-        -TargetGroupName $groupName `
-        -CurrentGroupDN  $group.DistinguishedName `
-        -IsRoot          $true `
-        -VisitedGroups   $visited)
-
-    if ($groupRows.Count -eq 0) {
-        Write-Verbose "Group '$groupName' has no resolvable members (empty, or all sub-groups empty)."
+    $state = @{
+        Leaves    = @{}
+        Visits    = 0
+        Truncated = $false
     }
-    $groupRows
+
+    # Verified on lab.local, 28-Nov-2026: 16 rows, identical to the previous walk;
+    # MembershipPaths / PathCount match lab/lab-scenarios.md (scenarios 9 and 11).
+    Resolve-GroupMembership `
+        -CurrentGroupDN $group.DistinguishedName `
+        -PathNames      @() `
+        -Ancestors      ([System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)) `
+        -State          $state
+
+    if ($state.Truncated) {
+        Write-Warning ("Path enumeration for '{0}' stopped after {1} group visits (pathological nesting). PathCount is a lower bound for this group's rows." -f $groupName, $MAX_GROUP_VISITS)
+    }
+
+    if ($state.Leaves.Count -eq 0) {
+        Write-Verbose "Group '$groupName' has no resolvable members (empty, or all sub-groups empty)."
+        continue
+    }
+
+    # One row per (principal, audited group): the row count is unchanged by the
+    # path enumeration, only the two path columns are added.
+    foreach ($leaf in $state.Leaves.Values) {
+        # Verified on lab.local, 28-Nov-2026 (PowerShell 5.1): Direct first, then
+        # fewest segments - see jadams / Administrators.
+        $paths  = @($leaf.Paths | Sort-Object -Property $pathSortKeys)
+        $listed = @($paths | Select-Object -First $MAX_LISTED_PATHS)
+        $text   = $listed -join '; '
+        if ($paths.Count -gt $MAX_LISTED_PATHS) {
+            $text += '; ... (+{0})' -f ($paths.Count - $MAX_LISTED_PATHS)
+        }
+
+        ConvertTo-PrivilegedRow `
+            -AdObject        $leaf.Object `
+            -TargetGroupName $groupName `
+            -IsDirect        ($paths -contains 'Direct') `
+            -MembershipPaths $text `
+            -PathCount       $paths.Count
+    }
 }
 
-# Collapse duplicate (SamAccountName, GroupName) rows; prefer Direct when both paths exist
-$results = $rawResults |
-    Group-Object SamAccountName, GroupName |
-    ForEach-Object {
-        $row = if ($_.Group.MembershipType -contains 'Direct') {
-            $_.Group | Where-Object MembershipType -eq 'Direct' | Select-Object -First 1
-        }
-        else {
-            $_.Group | Select-Object -First 1
-        }
-        [PSCustomObject]@{
-            SamAccountName    = $row.SamAccountName
-            DisplayName       = $row.DisplayName
-            GroupName         = $row.GroupName
-            MembershipType    = $row.MembershipType
-            ObjectClass       = $row.ObjectClass
-            Enabled           = $row.Enabled
-            AdminCount        = $row.AdminCount
-            DistinguishedName = $row.DistinguishedName
-        }
-    } |
-    Sort-Object GroupName, MembershipType, SamAccountName
+$results = @($results | Sort-Object GroupName, MembershipType, SamAccountName)
 
 if ($results) {
     try {

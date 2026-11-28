@@ -406,12 +406,31 @@ This is one of the most common findings in real audits because the team that own
 nested group is rarely the same team that owns DA.
 
 **Detection**:
-- `Get-PrivilegedUsers.ps1` → for `jadams` and `mlefevre`, rows with
-  `GroupName = Domain Admins, MembershipType = Nested`. The current dedup logic
-  collapses to `Direct` when the same user is also a direct member (lab quirk —
-  production would usually show pure Nested). The non-collapsed view: each chain is
-  traceable via the `DistinguishedName` of the principal and the `member` attribute
-  of intermediate groups.
+- `Get-PrivilegedUsers.ps1` → one row per (account, group). `MembershipType` reads
+  `Direct` because `jadams` and `mlefevre` are also direct members of DA (lab quirk —
+  production would usually show pure Nested). The nested path is no longer lost behind
+  that `Direct`: the `MembershipPaths` column lists every path and `PathCount` counts
+  them. Values **measured 28-Nov-2026** (the column was added after the 27-Nov-2026 run;
+  the 16 rows are unchanged):
+
+  | Account    | GroupName        | MembershipPaths                                     | PathCount |
+  |------------|------------------|-----------------------------------------------------|:---------:|
+  | `jadams`   | `Domain Admins`  | `Direct; via GG-IT-Admins`                          | 2 |
+  | `mlefevre` | `Domain Admins`  | `Direct; via GG-IT-Admins`                          | 2 |
+  | `jadams`   | `Administrators` | `via Domain Admins; via Domain Admins > GG-IT-Admins` | 2 |
+  | `mlefevre` | `Administrators` | `via Domain Admins; via Domain Admins > GG-IT-Admins` | 2 |
+
+  For comparison, accounts with a single path: `svc-backup` and `svc-legacy` read
+  `via Domain Admins` (1) on `Administrators`; `labadmin` reads `Direct` (1) on
+  `Domain Admins`.
+
+  The clearest example of the column is `labadmin` on `Administrators` (measured
+  28-Nov-2026): `Direct; via Domain Admins; via Enterprise Admins`, `PathCount = 3`.
+  One account, one row, three memberships to remove before the privilege is gone.
+
+  `PathCount = 2` is the remediation signal: removing `jadams` from DA alone leaves the
+  privilege in place through `GG-IT-Admins`, and the next audit shows the same row as
+  `Nested`. Every path has to be cut.
 
 **Remediation**: flatten the nesting. Either remove `GG-IT-Admins` from `Domain Admins`
 and require direct DA membership with an approval workflow, or split the group into
@@ -473,10 +492,13 @@ ultimately hold the privilege. A reviewer inspecting `Backup Operators` membersh
 one group; they have to walk into the group to see the actual accounts.
 
 **Detection**:
-- `Get-PrivilegedUsers.ps1` → `svc-sql, Backup Operators, Nested` (the dedup picks
-  Direct if also direct — in this lab `svc-sql` is both Direct and Nested, demonstrating
-  the dedup behaviour). The presence of the intermediate group is visible by inspecting
-  `Backup Operators` membership directly.
+- `Get-PrivilegedUsers.ps1` → one row `svc-sql, Backup Operators`, `MembershipType =
+  Direct` (in this lab `svc-sql` is both a direct and a nested member). The intermediate
+  group no longer has to be found by inspecting `Backup Operators` by hand: the row
+  carries both paths. **Measured 28-Nov-2026**:
+  `MembershipPaths = Direct; via GG-Backup-Operators-Team`, `PathCount = 2`. Removing
+  the direct membership alone would leave `svc-sql` in `Backup Operators` through the
+  team group.
 
 **Remediation**: same as Scenario 9 — flatten where possible, or formalise the team
 group as a managed object (owner, justification, review cadence).
@@ -766,8 +788,10 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
    `svc-backup`, `svc-legacy` all tagged `Direct, Domain Admins`, and each of them
    again as `Nested, Administrators` (via the default nesting of Domain Admins in
    the Built-in `Administrators` group). `svc-sql` should appear
-   `Direct, Backup Operators` (dedup collapses the `Nested` via
-   `GG-Backup-Operators-Team` to the Direct row). The built-in `Administrator` user
+   `Direct, Backup Operators`, with the path via `GG-Backup-Operators-Team` kept in
+   `MembershipPaths` (see Scenarios 9 and 11 for the path values, measured
+   28-Nov-2026). `labadmin` on `Administrators` should read `PathCount = 3`
+   (`Direct; via Domain Admins; via Enterprise Admins`). The built-in `Administrator` user
    appears across `Domain Admins`, `Enterprise Admins`, `Schema Admins`, and
    `Administrators`. Total ≈ 16 rows.
 4. **None of the disabled users** (`jsmith`, `rpark`, `wlegacy`) should appear in any
