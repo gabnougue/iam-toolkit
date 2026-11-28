@@ -764,7 +764,7 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
 |---------------------------------|:-------------:|---|
 | `inactive.csv` (with switch)    | **32**        | All enabled seeded users (35 − 3 disabled; measured 27-Nov-2026). `Get-InactiveUsers.ps1` cannot distinguish them because `whenCreated = today` and `lastLogonTimestamp = null` on every account. See the "criterion that matches 100%" note above — read this column as noise, not signal, in the lab dataset. |
 | `inactive.csv` (without switch) | 0             | All seeded users excluded as too-young — validates the filter |
-| `privileged.csv`                | **16**        | Measured 27-Nov-2026. Direct + Nested walk across DA, Backup Ops, Account Ops, plus the built-in `Administrator` user appearing across DA / Enterprise Admins / Schema Admins / Administrators. Cross-check with `Step 10 — Force SDProp` in [lab-setup.md](lab-setup.md); `adminCount` is `$null` on fresh DA members until SDProp propagates. |
+| `privileged.csv`                | **16**        | Measured 27-Nov-2026. Direct + Nested walk across DA, Backup Ops, Account Ops, plus the built-in administrator account (RID 500: `labadmin` on Azure, `Administrator` on a hypervisor) appearing in five groups: Administrators, Domain Admins, Enterprise Admins, Schema Admins, Group Policy Creator Owners. Cross-check with `Step 10 — Force SDProp` in [lab-setup.md](lab-setup.md); `adminCount` is `$null` on fresh DA members until SDProp propagates. |
 | `pne.csv`                       | 9             | Excludes disabled, excludes managed service accounts (none seeded) |
 | `kerberoastable.csv`            | **5**         | Measured 27-Nov-2026, order and severities as listed. `svc-backup` (Critical), then `svc-default`, `svc-mixed`, `svc-web` (Medium), then `svc-modern` (Low). No other user object in the lab carries an SPN; `krbtgt` is excluded by the script. See Scenario 15. |
 | `pne.csv` (`-IncludeDisabled`)  | 11+           | The 9 above, plus `wlegacy` (seeded disabled former DA with the PNE flag left behind) and the built-in `Guest` (disabled, PNE, `pwdLastSet = 0` so it lands at the bottom of the sort with empty PasswordLastSet / PasswordAge). `krbtgt` may also appear depending on domain configuration. |
@@ -791,9 +791,10 @@ Run from the repository root on the lab DC (or a host with RSAT against `lab.loc
    `Direct, Backup Operators`, with the path via `GG-Backup-Operators-Team` kept in
    `MembershipPaths` (see Scenarios 9 and 11 for the path values, measured
    28-Nov-2026). `labadmin` on `Administrators` should read `PathCount = 3`
-   (`Direct; via Domain Admins; via Enterprise Admins`). The built-in `Administrator` user
-   appears across `Domain Admins`, `Enterprise Admins`, `Schema Admins`, and
-   `Administrators`. Total ≈ 16 rows.
+   (`Direct; via Domain Admins; via Enterprise Admins`). The built-in administrator account
+   (RID 500: `labadmin` on Azure, `Administrator` on a hypervisor) appears in five
+   groups: `Administrators`, `Domain Admins`, `Enterprise Admins`, `Schema Admins`,
+   `Group Policy Creator Owners`. Total ≈ 16 rows.
 4. **None of the disabled users** (`jsmith`, `rpark`, `wlegacy`) should appear in any
    default-mode report.
 5. **`-IncludeDisabled` positive test**: rerun
